@@ -43,7 +43,7 @@ def load_rag_file():
     for file in file_path_list:
         if file.endswith(".pdf"):
             all_docs.extend(pdf_loader(file))
-        elif file.endswith(".md"):
+        elif file.endswith(".txt"):
             all_docs.extend(txt_loader(file))
         elif file.endswith(".md"):
             all_docs.extend(md_loader(file))
@@ -54,19 +54,52 @@ def load_rag_file():
 
 
 #文本切割
-def text_splitter(text:str) -> list[str]:
+def text_splitter(text:list[Document]):
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=config_ai.get("chunk_size",200),
         chunk_overlap=config_ai.get("chunk_overlap",20)
         )
-    return text_splitter.split_text(text)
     
+    return text_splitter.split_documents(text)
+    
+#加载知识库并切割
+def load_rag_file_and_split():
+    all_docs = load_rag_file()
+    
+    # 过滤掉内容为空或只有空白符的原始文档
+    valid_raw_docs = [d for d in all_docs if d.page_content and d.page_content.strip()]
+    
+    if not valid_raw_docs:
+        print("❌ 未发现有效内容")
+        return []
 
+    # 进行切分
+    splits = text_splitter(valid_raw_docs)
+    
+    final_splits = []
+    for doc in splits:
+        clean_content = doc.page_content.strip()
+        if clean_content:
+            doc.page_content = clean_content
+            final_splits.append(doc)
+    return final_splits
 
 
 #创造聊天模型模版
-def create_tempt(path:str) -> str:
-    prompt = txt_loader(path)[0].page_content
+def create_chat_tempt() -> str:
+    prompt = txt_loader(get_abs_path(r"app\llm\prompts\chat_prompt.txt"))[0].page_content
+    template = ChatPromptTemplate.from_messages(
+        [("system",prompt),
+        MessagesPlaceholder(variable_name="history_messages"),
+        ("human","{input}"),
+]
+    )
+    print(template)
+    return template
+
+#创造rag模型模版
+def create_rag_tempt() -> str:
+    prompt = txt_loader(get_abs_path(r"app\llm\prompts\rag_prompt.txt"))[0].page_content
     template = ChatPromptTemplate.from_messages(
         [("system",prompt),
         MessagesPlaceholder(variable_name="history_messages"),
@@ -74,13 +107,19 @@ def create_tempt(path:str) -> str:
 ]
     )
     return template
+
+#创造agent模型提示词
+def create_agent_tempt() -> str:
+    prompt = txt_loader(get_abs_path(r"app\llm\prompts\agent_prompt.txt"))[0].page_content
+
+    return prompt
     
 
-chat_prompt = create_tempt(r"app\llm\prompts\chat_prompt.txt")
-rag_prompt = create_tempt(r"app\llm\prompts\rag_prompt.txt")
-
+chat_prompt = create_chat_tempt()
+rag_prompt = create_rag_tempt()
+agent_prompt = create_agent_tempt()
 
 
 if __name__ == "__main__":
-    docs = create_tempt(r"app\llm\prompts\chat_prompt.txt")
+    docs = create_chat_tempt()
     print(docs)

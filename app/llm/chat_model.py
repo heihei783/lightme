@@ -6,11 +6,11 @@ def get_chat_model():
     Chat_model = ChatOpenAI(
         api_key=config_ai['CHAT_MODEL_API_KEY'],
         model=config_ai['CHAT_MODEL_NAME'],
-        base_url=config_ai['CHAT_MODEL_URL']
+        base_url=config_ai['CHAT_MODEL_URL'],
     )
     return Chat_model
 
-
+chat_model = get_chat_model()
 
 
 

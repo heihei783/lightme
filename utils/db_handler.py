@@ -4,11 +4,15 @@ import uuid
 from datetime import datetime
 from utils.path_tool import get_abs_path
 from langchain_community.chat_message_histories import SQLChatMessageHistory
+from langchain_chroma import Chroma
 from utils.config_handler import config_ai
-
+from app.llm.rag_model import embedding
+from utils.file_handler import load_rag_file_and_split
 
 # 数据库文件路径
 DB_URL = f"sqlite:///{get_abs_path('data/chat_history.db').replace('\\', '/')}"
+VECTOR_DB = get_abs_path("data/vector_db")
+
 
 
 #获取时间
@@ -17,7 +21,6 @@ def get_time() ->str:
         client = ntplib.NTPClient()
         # 请求阿里云的时间服务器
         response = client.request('ntp.aliyun.com', version=3)
-        print("----正在获取互联网时间")
         return datetime.fromtimestamp(response.tx_time).strftime("%Y-%m-%d %H:%M:%S")
     except:
         # 如果断网了，再退回到系统时间
@@ -117,20 +120,30 @@ def update_chat_time(session_id: str):
     conn.close()
 
 
-#rag向量库检索
+#存入向量知识库
+def save_vector_db():
+    Chroma.from_documents(
+    documents=load_rag_file_and_split(),
+    embedding=embedding,
+    persist_directory=VECTOR_DB, # 存到本地硬盘，下次不用重新加载
+    )
+
+# 向量知识库搜索
+def rag_search(question: str):
+    vector_db = Chroma(
+        persist_directory=get_abs_path("data/vector_db"),
+        embedding_function=embedding
+    )
+    
+    # 搜索前 5 个最相关的片段
+    docs = vector_db.similarity_search(question, k=config_ai.get("top_k", 5))
+    print(docs)
+    return docs
+
 
 
 
 
 
 if __name__ == "__main__":
-    time = get_time()
-    print(time)
-
-    test_id = "xiaohundun_test"
-    add_message(test_id, "你好，数据库！", "你好，我是 AI。")
-    
-    # 验证读取
-    history = get_session_history(test_id)
-    print("历史记录中的消息：")
-    print(history)
+    clear_session("xiaohundun_test")
