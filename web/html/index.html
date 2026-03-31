@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LightMe AI 终端</title>
+    <link rel="stylesheet" href="../css/index.css">
+</head>
+
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <button id="new-chat-btn">+ 新建对话</button>
+            </div>
+            <div id="session-list" class="session-list">
+            </div>
+        </div>
+
+        <div class="live2d-side" id="live2d-container">
+            <div class="character-placeholder"></div>
+        </div>
+
+        <div class="chat-side">
+            <div class="header">
+                <h2 id="current-title">LightMe System</h2>
+                <span class="status-dot"></span>
+            </div>
+
+            <div id="chat-window">
+            </div>
+
+            <div class="input-area">
+                <input type="text" id="user-input" placeholder="输入消息..." autocomplete="off">
+                <button id="send-btn">发送</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="../js/index.js"></script>
+</body>
+
+</html>

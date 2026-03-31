@@ -11,3 +11,6 @@ wheels/
 config/config_ai.yaml
 data/chat_history.db
 data/rag_file/*
+data/vector_db/
+data/file_hash.txt
+data/voice

@@ -1,0 +1,194 @@
+:root {
+    --sakura-pink: #ffb7c5;
+    --sky-blue: #87ceeb;
+    --glass-white: rgba(255, 255, 255, 0.2);
+    --glass-border: rgba(255, 255, 255, 0.3);
+    --active-blue: rgba(66, 133, 244, 0.15);
+}
+
+body {
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: linear-gradient(120deg, #a1c4fd 0%, #c2e9fb 100%);
+    font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.container {
+    width: 95vw;
+    /* 稍微调宽一点以容纳侧边栏 */
+    height: 85vh;
+    display: flex;
+    background: var(--glass-white);
+    backdrop-filter: blur(25px);
+    -webkit-backdrop-filter: blur(25px);
+    border: 1px solid var(--glass-border);
+    border-radius: 30px;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+}
+
+/* 🌟 左侧侧边栏样式 */
+.sidebar {
+    width: 260px;
+    background: rgba(255, 255, 255, 0.15);
+    border-right: 1px solid var(--glass-border);
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar-header {
+    padding: 20px;
+}
+
+#new-chat-btn {
+    width: 100%;
+    padding: 12px;
+    border-radius: 12px;
+    background: var(--glass-white);
+    border: 1px dashed var(--glass-border);
+    color: #555;
+    cursor: pointer;
+    transition: 0.3s;
+}
+
+#new-chat-btn:hover {
+    background: rgba(255, 255, 255, 0.4);
+}
+
+.session-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 10px 20px;
+}
+
+.session-item {
+    padding: 12px 15px;
+    margin-bottom: 8px;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 14px;
+    color: #555;
+    transition: 0.2s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.session-item:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.session-item.active {
+    background: var(--active-blue);
+    color: #4285f4;
+    font-weight: 500;
+}
+
+/* 中间角色区 */
+.live2d-side {
+    flex: 1;
+    border-right: 1px solid var(--glass-border);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+/* 右侧聊天区 */
+.chat-side {
+    flex: 1.8;
+    display: flex;
+    flex-direction: column;
+    padding: 30px;
+}
+
+#chat-window {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+/* 消息气泡保持不变，微调边距 */
+.message {
+    padding: 12px 18px;
+    border-radius: 18px;
+    max-width: 85%;
+    font-size: 15px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+    line-height: 1.5;
+}
+
+.ai-msg {
+    background: rgba(255, 255, 255, 0.6);
+    color: #444;
+    align-self: flex-start;
+    border-bottom-left-radius: 4px;
+}
+
+.user-msg {
+    background: var(--sakura-pink);
+    color: white;
+    align-self: flex-end;
+    border-bottom-right-radius: 4px;
+}
+
+.input-area {
+    margin-top: 20px;
+    display: flex;
+    gap: 12px;
+}
+
+input {
+    flex: 1;
+    border: 1px solid var(--glass-border);
+    background: rgba(255, 255, 255, 0.4);
+    border-radius: 15px;
+    padding: 12px 20px;
+    outline: none;
+}
+
+button#send-btn {
+    background: var(--sky-blue);
+    color: white;
+    border: none;
+    padding: 0 25px;
+    border-radius: 15px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+/* 🌟 调整原本的 session-item，让内部元素两端对齐 */
+.session-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* 🌟 删除按钮的样式 */
+.delete-btn {
+    background: none;
+    border: none;
+    color: rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 5px;
+    display: none;
+    /* 默认藏起来喵！ */
+    transition: color 0.3s;
+}
+
+/* 🌟 鼠标悬浮在对话框上时，显示删除按钮 */
+.session-item:hover .delete-btn {
+    display: block;
+}
+
+/* 🌟 鼠标指在删除按钮上时，变成危险的红色 */
+.delete-btn:hover {
+    color: #ff4d4f;
+}

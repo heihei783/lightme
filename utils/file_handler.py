@@ -5,6 +5,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from utils.path_tool import get_abs_path
 from utils.config_handler import config_ai
 import os
+import hashlib
 
 #加载不同的文本
 def pdf_loader(filepath:str,passwd:str = None) -> list[Document]:
@@ -33,25 +34,7 @@ def get_file_list(dir_path:str) -> list[str]:
     return file_path_list
         
         
-
-#读取知识库中的不同文件
-def load_rag_file():
-    dir_path = get_abs_path(r"data\rag_file")
-    file_path_list = get_file_list(dir_path)
-    all_docs = []
-
-    for file in file_path_list:
-        if file.endswith(".pdf"):
-            all_docs.extend(pdf_loader(file))
-        elif file.endswith(".txt"):
-            all_docs.extend(txt_loader(file))
-        elif file.endswith(".md"):
-            all_docs.extend(md_loader(file))
-        elif file.endswith(".docx"):
-            all_docs.extend(docx_loader(file))
-    return all_docs
     
-
 
 #文本切割
 def text_splitter(text:list[Document]):
@@ -61,17 +44,22 @@ def text_splitter(text:list[Document]):
         )
     
     return text_splitter.split_documents(text)
-    
+
+#判断文件类型
+def get_file_type(file_path:str) -> str:
+    if file_path.endswith(".pdf"):
+        return pdf_loader(file_path)
+    elif file_path.endswith(".txt"):
+        return txt_loader(file_path)
+    elif file_path.endswith(".md"):
+        return md_loader(file_path)
+    elif file_path.endswith(".docx"):
+        return docx_loader(file_path)
+
+
 #加载知识库并切割
-def load_rag_file_and_split():
-    all_docs = load_rag_file()
-    
-    # 过滤掉内容为空或只有空白符的原始文档
-    valid_raw_docs = [d for d in all_docs if d.page_content and d.page_content.strip()]
-    
-    if not valid_raw_docs:
-        print("❌ 未发现有效内容")
-        return []
+def load_rag_file(file_path:str):
+    valid_raw_docs = get_file_type(file_path)
 
     # 进行切分
     splits = text_splitter(valid_raw_docs)
@@ -85,6 +73,35 @@ def load_rag_file_and_split():
     return final_splits
 
 
+#计算哈希值
+def is_file_exist(new_file_path, hash_list_path="data/file_hash.txt"):
+    """
+    检查新上传的文件内容是否已存在于账本中。
+    如果不存在，则将新哈希追加到账本。
+    """
+    # 1. 计算上传文件的哈希值
+    sha256_hash = hashlib.sha256()
+    with open(new_file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    current_hash = sha256_hash.hexdigest()
+
+    # 2. 读取账本（如果账本不存在则创建）
+    if not os.path.exists(hash_list_path):
+        os.makedirs(os.path.dirname(hash_list_path), exist_ok=True)
+        with open(hash_list_path, "w") as f: pass
+
+    with open(hash_list_path, "r") as f:
+        # 使用 set 提高查询效率
+        recorded_hashes = set(line.strip() for line in f.readlines())
+
+    # 3. 对比与追加
+    if current_hash in recorded_hashes:
+        return True, current_hash,new_file_path  # 返回 True 表示已存在（重复）
+    else:
+        return False, current_hash,new_file_path # 返回 False 表示是新文件
+
+
 #创造聊天模型模版
 def create_chat_tempt() -> str:
     prompt = txt_loader(get_abs_path(r"app\llm\prompts\chat_prompt.txt"))[0].page_content
@@ -92,9 +109,8 @@ def create_chat_tempt() -> str:
         [("system",prompt),
         MessagesPlaceholder(variable_name="history_messages"),
         ("human","{input}"),
-]
-    )
-    print(template)
+        ]
+        )
     return template
 
 #创造rag模型模版

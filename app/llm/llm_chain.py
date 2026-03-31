@@ -10,60 +10,53 @@ from app.llm.agent import agent
 chain = chat_prompt | chat_model | StrOutputParser()
 
 
-def weather_agent(history,question):
+def weather_agent(history, question):
     is_agent = config_ai.get("agent_open", False)
-    is_stream = config_ai.get("STREAM", False)
-    if is_agent:
-            input_messages = history + [("user", question)]
-            if not is_stream:
-                result = agent.invoke({"messages": input_messages})
-                response_text = result["messages"][-1].content
-                print(response_text)
-                return response_text
-            else:
-                full_text = ""
-                result = agent.stream({"messages": input_messages}, stream_mode="messages")
-                for msg, metadata in result:
-                    if msg.content and not msg.tool_calls:
-                        full_text += msg.content
-                        print(msg.content, end="", flush=True)
-                print() 
-                return full_text
-    else:
-        if not is_stream:
-            response_text = chain.invoke({
-                "input": question,
-                "history_messages": history
-            })
-            print(response_text)
-            return response_text
-        else:
-            full_text = ""
-            result = chain.stream({
-                "input": question,
-                "history_messages": history
-            })
-            for chunk in result:
-                full_text += chunk
-                print(chunk, end="", flush=True)
-            print()
-            return full_text
-
-
-
-
-
-
-def chat_loop():
-    while True:
-        question = input("请输入问题：")
-        session_id = "xiaohundun_test"
     
-        history = get_session_history(session_id)
-        
-        response_text = weather_agent(history,question)
+    if is_agent:
+        input_messages = history + [("user", question)]
+            # 🌟 重点：改为 yield 每一个碎片
+        def stream_generator():
+            result = agent.stream({"messages": input_messages}, stream_mode="messages")
+            for msg, metadata in result:
+                if msg.content and not msg.tool_calls:
+                    yield msg.content # 这里的 yield 会把碎片直接喷出去
+        return stream_generator() # 返回生成器对象
 
-        add_message(session_id, question, response_text)
+    else:
+        # 🌟 同样改为 yield
+        def stream_generator():
+            result = chain.stream({"input": question, "history_messages": history})
+            for chunk in result:
+                yield chunk
+        return stream_generator()
+
+
+
+
+
+
+def chat_loop(session_id, question):
+    # 1. 获取历史记录
+    history = get_session_history(session_id)
+    
+    # 2. 开启 AI 的原始碎片流
+    # 假设 weather_agent 现在返回的是 yield 出来的碎片
+    gen = weather_agent(history, question)
+    
+    full_response = "" # 🌟 这就是我们的“接水桶”
+
+    # 3. 开始迭代：这是流式的灵魂
+    for chunk in gen:
+        full_response += chunk  # 这里的每一步都在往桶里存
+        yield chunk             # 这里的每一步都在把碎片给前端
+        
+    # 4. 【魔法时刻】当循环结束，说明 AI 话讲完了！
+    # 此时 full_response 已经自动拼成了一段完整的文字
+    if full_response:
+        print(f"--- 对话结束，存入数据库: {full_response[:20]}... ---")
+        # 🌟 在这里执行你的数据库存储逻辑
+        add_message(session_id, question, full_response)
 
 
 if __name__ == "__main__":
