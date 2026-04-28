@@ -4,19 +4,21 @@ import uuid
 import shutil
 import os
 from datetime import datetime
+from langchain_community.storage import SQLStore
 from utils.path_tool import get_abs_path
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_chroma import Chroma
 from utils.config_handler import config_ai
-from app.llm.rag_model import embedding
-from utils.file_handler import load_rag_file, is_file_exist, get_file_list
+from app.llm.embed_model import embedding
+from utils.file_handler import is_file_exist, child_splitter, parent_splitter,get_file_list
+from langchain_classic.retrievers import ParentDocumentRetriever
 
 
 # 数据库文件路径
 DB_URL = f"sqlite:///{get_abs_path('data/chat_history.db').replace('\\', '/')}"
 VECTOR_DB = get_abs_path("data/vector_db")
 DB_PATH = get_abs_path("data/chat_history.db")
-
+PARENT_DB_PATH = get_abs_path("data/parent_document.db")
 
 # 获取时间
 def get_time() -> str:
@@ -107,7 +109,7 @@ def create_new_chat(first_question: str = "新对话"):
     return new_id
 
 
-# 🌟 你写的获取列表逻辑
+#  你写的获取列表逻辑
 def get_all_chats():
     init_chat_list_table()
     conn = sqlite3.connect(DB_PATH)
@@ -121,7 +123,7 @@ def get_all_chats():
     return [{"id": r[0], "title": r[1], "time": r[2]} for r in rows]
 
 
-# 🌟 获取历史记录
+#  获取历史记录
 def get_messages_by_sid(session_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -134,7 +136,7 @@ def get_messages_by_sid(session_id):
     return [{"role": r[0], "content": r[1]} for r in rows]
 
 
-# 🌟 存储单条消息并更新时间
+#  存储单条消息并更新时间
 def save_message_and_update(session_id, role, content):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -183,39 +185,44 @@ def delete_chat_list(session_id: str):
 
 # ------------------------------------------------------------------------
 
-
-# 存入向量知识库
-def save_vector_db(new_file_path: str):
-    weather_exist, file_hash, file_path = is_file_exist(
-        new_file_path, hash_list_path="data/file_hash.txt"
-    )
-    if weather_exist:
-        print("文件已存在，无需重复保存")
-        return
-    try:
-        Chroma.from_documents(
-            documents=load_rag_file(file_path),
-            embedding=embedding,
-            persist_directory=VECTOR_DB,  # 存到本地硬盘，下次不用重新加载
+class ParentDocument:
+    # 存储父类文本信息并初始化检索器
+    def __init__(self):
+        self.retriever = self.get_retriever()
+        self.vector_db = Chroma(persist_directory=VECTOR_DB, embedding_function=embedding)
+        self.store = SQLStore(query_linker=f"sqlite:///{PARENT_DB_PATH}")
+    def get_retriever(self):
+        retriever = ParentDocumentRetriever(
+            vectorstore=self.vector_db,
+            docstore=self.store,
+            child_splitter=child_splitter,
+            parent_splitter=parent_splitter,
         )
-        with open("data/file_hash.txt", "a") as f:
-            f.write(file_hash + "\n")
-        print("向量知识库保存成功")
-    except Exception as e:
-        print(f"向量知识库保存失败: {e}")
+        return retriever
 
-
-# 向量知识库搜索
-def rag_search(question: str):
-    vector_db = Chroma(
-        persist_directory=get_abs_path("data/vector_db"), embedding_function=embedding
-    )
-
-    # 搜索前 5 个最相关的片段
-    docs = vector_db.similarity_search(question, k=config_ai.get("top_k", 5))
-    print(docs)
-    return docs
-
+    # 存入知识库的函数
+    def save_to_rag(self, new_file_path: str):
+        # 1. 依然使用你的哈希校验
+        weather_exist, file_hash, file_path = is_file_exist(new_file_path)
+        if weather_exist:
+            return
+        
+        # 2. 获取 retriever
+        retriever = self.get_retriever()
+        
+        # 3. 加载原始文档（不要手动切割！）
+        raw_docs = get_file_list(file_path) # 这里只需返回未切割的 Document 列表
+        
+        try:
+            # 4. 【核心改动】交给 retriever 统一处理父子切割和存储
+            retriever.add_documents(raw_docs)
+            
+            # 记录哈希
+            with open("data/file_hash.txt", "a") as f:
+                f.write(file_hash + "\n")
+            print("父子索引知识库构建成功")
+        except Exception as e:
+            print(f"保存失败: {e}")
 
 # 清空知识库
 
@@ -259,6 +266,4 @@ def reset_knowledge_base():
 
 
 if __name__ == "__main__":
-    clear_session("xiaohundun_test")
-    clear_session("chat_27436410")
-    clear_session("session_1774948387447")
+    reset_knowledge_base()

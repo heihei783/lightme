@@ -1,5 +1,5 @@
 from langchain_core.tools import tool
-from utils.db_handler import rag_search 
+from utils.rag_handler import rag_search
 from langchain.agents import create_agent
 from app.llm.chat_model import chat_model
 from utils.file_handler import agent_prompt,txt_loader
@@ -26,7 +26,7 @@ def init_agent():
     agent = create_agent(
         model=chat_model, 
         tools=tools, 
-        system_prompt=agent_prompt)
+        system_prompt=conbine_prompt)
     return agent
 
 agent = init_agent()

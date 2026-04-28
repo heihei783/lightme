@@ -56,7 +56,7 @@ async def chat(request: Request):
         db.save_message_and_update(sid, "user-msg", message)
         db.save_message_and_update(sid, "ai-msg", full_reply)
 
-    # 🌟 在返回体里带上 Header，把新 ID 扔给前端
+    # 在返回体里带上 Header，把新 ID 扔给前端
     return StreamingResponse(
         response_stream(), 
         media_type="text/plain", 

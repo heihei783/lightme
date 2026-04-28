@@ -1,0 +1,90 @@
+from app.llm.chat_model import chat_model
+from utils.path_tool import get_abs_path
+from utils.file_handler import config_ai
+from app.llm.embed_model import embedding
+from utils.db_handler import ParentDocument
+
+
+"""Context Enrichment (父子索引/上下文增强)，
+Query Transformation (查询转换)，
+Query Router (查询路由)，
+Hierarchical Index (层次索引)"""
+
+
+import uuid
+from langchain_community.vectorstores import Chroma
+from langchain_classic.retrievers import ParentDocumentRetriever
+from langchain_core.stores import InMemoryStore
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+class AdvancedRAG:
+    def __init__(self):
+        parentdocument = ParentDocument()
+        self.retriever = parentdocument.retriever
+        self.vector_db = parentdocument.vector_db
+        self.store = parentdocument.store
+
+    def query_router(self, question: str) -> str:
+        """功能 3: 查询路由 (Query Router)"""
+        # 让 LLM 判断：'search' (需要RAG) 或 'chat' (直接闲聊)
+        prompt = f"判断以下用户意图，只返回单词 'search' 或 'chat'：\n{question}"
+        decision = chat_model.invoke(prompt).strip().lower()
+        return "search" if "search" in decision else "chat"
+
+    def query_transform(self, question: str) -> list[str]:
+        """功能 2: 查询转换 (Query Transformation)"""
+        # 让 LLM 生成多个变体问题
+        prompt = f"请将问题 '{question}' 改写为 3 个意思相近的搜索关键词，每行一个。"
+        response = chat_model.invoke(prompt)
+        variants = [q.strip() for q in response.split("\n") if q.strip()]
+        return [question] + variants
+
+    def hierarchical_search(self, question: str):
+        """功能 1 & 4: 层次索引 + 上下文增强检索"""
+        # 这里集成父子索引逻辑
+        # retriever 会自动：1. 搜索子块 2. 找到对应的父块 3. 返回完整的父块上下文
+        docs = self.retriever.get_relevant_documents(question)
+        return docs
+
+    def run_pipeline(self, question: str):
+        """完整的进阶 RAG 流水线"""
+        
+        # 第一步：路由决策
+        if self.query_router(question) == "chat":
+            return None # 走普通对话逻辑
+
+        # 第二步：查询转换（把 1 个问题变 4 个）
+        all_queries = self.query_transform(question)
+        
+        # 第三步：层次化检索 (Hierarchical + Enrichment)
+        final_docs = []
+        for q in all_queries:
+            # 这里的检索会自动返回更有逻辑的“父块”
+            docs = self.hierarchical_search(q)
+            final_docs.extend(docs)
+        
+        # 第四步：去重
+        unique_docs = {doc.page_content: doc for doc in final_docs}.values()
+        return list(unique_docs)
+
+# 使用方式
+# rag = AdvancedRAG()
+# docs = rag.run_pipeline("你的猫娘设定是什么？")
+
+
+
+
+
+
+
+
+# 向量知识库搜索
+# def rag_search(question: str):
+#     vector_db = Chroma(
+#         persist_directory=get_abs_path("data/vector_db"), embedding_function=embedding
+#     )
+
+#     # 搜索前 5 个最相关的片段
+#     docs = vector_db.similarity_search(question, k=config_ai.get("top_k", 5))
+#     print(docs)
+#     return docs

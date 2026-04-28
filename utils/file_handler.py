@@ -37,40 +37,51 @@ def get_file_list(dir_path:str) -> list[str]:
     
 
 #文本切割
-def text_splitter(text:list[Document]):
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=config_ai.get("chunk_size",200),
-        chunk_overlap=config_ai.get("chunk_overlap",20)
+def child_splitter(text:list[Document]):
+    child_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=config_ai.get("child_chunk_size",200),
+        chunk_overlap=config_ai.get("chunk_overlap",20),
+        separators=config_ai.get("parent_separators", ["\n\n", "\n", "。", "！", "？", " ", ""])
         )
     
-    return text_splitter.split_documents(text)
-
-#判断文件类型
-def get_file_type(file_path:str) -> str:
-    if file_path.endswith(".pdf"):
-        return pdf_loader(file_path)
-    elif file_path.endswith(".txt"):
-        return txt_loader(file_path)
-    elif file_path.endswith(".md"):
-        return md_loader(file_path)
-    elif file_path.endswith(".docx"):
-        return docx_loader(file_path)
+    return child_splitter.split_documents(text)
 
 
-#加载知识库并切割
-def load_rag_file(file_path:str):
-    valid_raw_docs = get_file_type(file_path)
-
-    # 进行切分
-    splits = text_splitter(valid_raw_docs)
+def parent_splitter(text:list[Document]):
+    parent_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=config_ai.get("parent_chunk_size",1000),
+        chunk_overlap=config_ai.get("chunk_overlap",20),
+        separators=config_ai.get("parent_separators", ["\n\n", "\n", "。", "！", "？", " ", ""])
+        )
     
-    final_splits = []
-    for doc in splits:
-        clean_content = doc.page_content.strip()
-        if clean_content:
-            doc.page_content = clean_content
-            final_splits.append(doc)
-    return final_splits
+    return parent_splitter.split_documents(text)
+#-----------------------------------------------
+# #判断文件类型
+# def get_file_type(file_path:str) -> str:
+#     if file_path.endswith(".pdf"):
+#         return pdf_loader(file_path)
+#     elif file_path.endswith(".txt"):
+#         return txt_loader(file_path)
+#     elif file_path.endswith(".md"):
+#         return md_loader(file_path)
+#     elif file_path.endswith(".docx"):
+#         return docx_loader(file_path)
+
+
+# #加载知识库并切割
+# def load_rag_file(file_path:str):
+#     valid_raw_docs = get_file_type(file_path)
+
+#     # 进行切分
+#     splits = child_splitter(valid_raw_docs)
+    
+#     final_splits = []
+#     for doc in splits:
+#         clean_content = doc.page_content.strip()
+#         if clean_content:
+#             doc.page_content = clean_content
+#             final_splits.append(doc)
+#     return final_splits
 
 
 #计算哈希值
