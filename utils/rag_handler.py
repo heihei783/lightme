@@ -28,7 +28,8 @@ class AdvancedRAG:
         """功能 3: 查询路由 (Query Router)"""
         # 让 LLM 判断：'search' (需要RAG) 或 'chat' (直接闲聊)
         prompt = f"判断以下用户意图，只返回单词 'search' 或 'chat'：\n{question}"
-        decision = chat_model.invoke(prompt).strip().lower()
+        decision = chat_model.invoke(prompt).content.strip().lower()
+        print(f"用户的意图是：{decision}")
         return "search" if "search" in decision else "chat"
 
     def query_transform(self, question: str) -> list[str]:
@@ -36,14 +37,15 @@ class AdvancedRAG:
         # 让 LLM 生成多个变体问题
         prompt = f"请将问题 '{question}' 改写为 3 个意思相近的搜索关键词，每行一个。"
         response = chat_model.invoke(prompt)
-        variants = [q.strip() for q in response.split("\n") if q.strip()]
+        variants = [q.strip() for q in response.content.split("\n") if q.strip()]
+        print(f"我的问题是：{question}，查询转至的三个问题是：{variants}")
         return [question] + variants
 
     def hierarchical_search(self, question: str):
         """功能 1 & 4: 层次索引 + 上下文增强检索"""
         # 这里集成父子索引逻辑
         # retriever 会自动：1. 搜索子块 2. 找到对应的父块 3. 返回完整的父块上下文
-        docs = self.retriever.get_relevant_documents(question)
+        docs = self.retriever.invoke(question)
         return docs
 
     def run_pipeline(self, question: str):
@@ -66,19 +68,24 @@ class AdvancedRAG:
         # 第四步：去重
         unique_docs = {doc.page_content: doc for doc in final_docs}.values()
         return list(unique_docs)
-
+rag = AdvancedRAG()
 # 使用方式
 # rag = AdvancedRAG()
 # docs = rag.run_pipeline("你的猫娘设定是什么？")
 
 
 
+if __name__ == "__main__":
+    rag = AdvancedRAG()
+    docs = rag.run_pipeline("我该哪里去找galgame资源？通过向量检索给我。")
+    print(docs)
+    docs = rag.run_pipeline("我喜欢你呀！")
+    print(docs)
 
 
 
 
-
-# 向量知识库搜索
+# 最初的索引，没舍得删。向量知识库搜索
 # def rag_search(question: str):
 #     vector_db = Chroma(
 #         persist_directory=get_abs_path("data/vector_db"), embedding_function=embedding

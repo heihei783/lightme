@@ -10,6 +10,7 @@ wheels/
 .venv
 config/config_ai.yaml
 data/chat_history.db
+data/parent_document.db
 data/rag_file/*
 data/vector_db/
 data/file_hash.txt

@@ -17,7 +17,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],  
     allow_headers=["*"],
-    expose_headers=["X-Session-Id"]  # 🌟 必须添加这行，前端 JS 才能拿到新 ID！
+    expose_headers=["X-Session-Id"]  
 )
 
 app.mount("/web", StaticFiles(directory="web/"), name="web")
@@ -48,13 +48,8 @@ async def chat(request: Request):
         sid = db.create_new_chat(message)
 
     async def response_stream():
-        full_reply = ""
         for chunk in chat_loop(sid, message):
-            full_reply += chunk
             yield chunk
-        
-        db.save_message_and_update(sid, "user-msg", message)
-        db.save_message_and_update(sid, "ai-msg", full_reply)
 
     # 在返回体里带上 Header，把新 ID 扔给前端
     return StreamingResponse(

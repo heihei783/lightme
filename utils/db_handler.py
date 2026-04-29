@@ -3,22 +3,27 @@ import sqlite3
 import uuid
 import shutil
 import os
+import json
 from datetime import datetime
+from langchain_core.documents import Document
 from langchain_community.storage import SQLStore
 from utils.path_tool import get_abs_path
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_chroma import Chroma
 from utils.config_handler import config_ai
 from app.llm.embed_model import embedding
-from utils.file_handler import is_file_exist, child_splitter, parent_splitter,get_file_list
+from utils.file_handler import is_file_exist, child_splitter, parent_splitter,get_file_doc
 from langchain_classic.retrievers import ParentDocumentRetriever
+from langchain_classic.storage import EncoderBackedStore
+
 
 
 # 数据库文件路径
 DB_URL = f"sqlite:///{get_abs_path('data/chat_history.db').replace('\\', '/')}"
 VECTOR_DB = get_abs_path("data/vector_db")
 DB_PATH = get_abs_path("data/chat_history.db")
-PARENT_DB_PATH = get_abs_path("data/parent_document.db")
+PARENT_DB = get_abs_path("data/parent_document.db")
+HASH_FILE_PATH = get_abs_path("data/file_hash.txt")
 
 # 获取时间
 def get_time() -> str:
@@ -33,12 +38,12 @@ def get_time() -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-# 1. 专门负责获取“管理对象” (也就是那个能操作数据库的“遥控器”)
+# 1. 专门负责获取"管理对象" (也就是那个能操作数据库的"遥控器")
 def get_history_obj(session_id: str):
     return SQLChatMessageHistory(session_id=session_id, connection_string=DB_URL)
 
 
-# 2. 专门负责获取“给 AI 看的消息列表” (截断后的数据)
+# 2. 专门负责获取"给 AI 看的消息列表" (截断后的数据)
 def get_session_history(session_id: str):
     history_obj = get_history_obj(session_id)
     limit = config_ai.get("chat_history_len", 10)
@@ -49,12 +54,16 @@ def get_session_history(session_id: str):
 # 3. 向数据库添加历史记录
 def add_message(session_id: str, message: str, response_text: str):
     time_str = get_time()
-    # 关键：这里必须获取“对象”，而不是“列表”
     history_obj = get_history_obj(session_id)
 
-    # 使用对象的方法存入数据库
     history_obj.add_user_message(f"[{time_str}] {message}")
     history_obj.add_ai_message(f"[{time_str}] {response_text}")
+
+    # 同步更新会话列表的活跃时间
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE chat_list SET update_time = ? WHERE session_id = ?", (time_str, session_id))
+    conn.commit()
+    conn.close()
 
 
 # 4. 清空会话的历史记录
@@ -71,21 +80,11 @@ def clear_session(session_id: str):
 def init_chat_list_table():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # 你的会话列表表
     cursor.execute("""CREATE TABLE IF NOT EXISTS chat_list (
-        session_id TEXT PRIMARY KEY, 
-        chat_title TEXT, 
-        create_time TEXT, 
+        session_id TEXT PRIMARY KEY,
+        chat_title TEXT,
+        create_time TEXT,
         update_time TEXT
-    )""")
-    # 存储具体聊天内容的表
-    cursor.execute("""CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT,
-        role TEXT,
-        content TEXT,
-        timestamp TEXT,
-        FOREIGN KEY (session_id) REFERENCES chat_list (session_id)
     )""")
     conn.commit()
     conn.close()
@@ -109,7 +108,7 @@ def create_new_chat(first_question: str = "新对话"):
     return new_id
 
 
-#  你写的获取列表逻辑
+#  获取列表逻辑
 def get_all_chats():
     init_chat_list_table()
     conn = sqlite3.connect(DB_PATH)
@@ -122,35 +121,6 @@ def get_all_chats():
     # [修改] 返回 id 而非 session_id，以匹配前端字段名
     return [{"id": r[0], "title": r[1], "time": r[2]} for r in rows]
 
-
-#  获取历史记录
-def get_messages_by_sid(session_id):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
-        (session_id,),
-    )
-    rows = cursor.fetchall()
-    conn.close()
-    return [{"role": r[0], "content": r[1]} for r in rows]
-
-
-#  存储单条消息并更新时间
-def save_message_and_update(session_id, role, content):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-        (session_id, role, content, get_time()),
-    )
-    # 更新会话最后活跃时间喵！
-    cursor.execute(
-        "UPDATE chat_list SET update_time = ? WHERE session_id = ?",
-        (get_time(), session_id),
-    )
-    conn.commit()
-    conn.close()
 
 def delete_chat_list(session_id: str):
     conn = None
@@ -188,15 +158,25 @@ def delete_chat_list(session_id: str):
 class ParentDocument:
     # 存储父类文本信息并初始化检索器
     def __init__(self):
-        self.retriever = self.get_retriever()
+        raw_storage = SQLStore(db_url=f"sqlite:///{PARENT_DB}", namespace="parent_docs")
+        raw_storage.create_schema()
         self.vector_db = Chroma(persist_directory=VECTOR_DB, embedding_function=embedding)
-        self.store = SQLStore(query_linker=f"sqlite:///{PARENT_DB_PATH}")
+        self.store = SQLStore(db_url=f"sqlite:///{PARENT_DB}",namespace="parent_docs")
+        self.store.create_schema()
+        self.store = EncoderBackedStore(
+        store=raw_storage,
+        key_encoder=lambda k: k,
+        value_serializer=lambda v: json.dumps(v.dict()).encode('utf-8'),
+        value_deserializer=lambda v: Document(**json.loads(v.decode('utf-8')))
+    )
+        
+        self.retriever = self.get_retriever()
     def get_retriever(self):
         retriever = ParentDocumentRetriever(
             vectorstore=self.vector_db,
             docstore=self.store,
-            child_splitter=child_splitter,
-            parent_splitter=parent_splitter,
+            child_splitter=child_splitter(),
+            parent_splitter=parent_splitter(),
         )
         return retriever
 
@@ -205,14 +185,17 @@ class ParentDocument:
         # 1. 依然使用你的哈希校验
         weather_exist, file_hash, file_path = is_file_exist(new_file_path)
         if weather_exist:
+            print("⚠️ 该文件已存在于知识库中，跳过入库喵！")
             return
         
         # 2. 获取 retriever
         retriever = self.get_retriever()
         
         # 3. 加载原始文档（不要手动切割！）
-        raw_docs = get_file_list(file_path) # 这里只需返回未切割的 Document 列表
-        
+        raw_docs = get_file_doc(new_file_path) # 这里只需返回未切割的 Document 列表
+        if not raw_docs or len(raw_docs[0].page_content.strip()) == 0:
+            print("❌ 错误：读取到的文件内容为空，请检查文件路径或内容喵！")
+            return
         try:
             # 4. 【核心改动】交给 retriever 统一处理父子切割和存储
             retriever.add_documents(raw_docs)
@@ -224,46 +207,40 @@ class ParentDocument:
         except Exception as e:
             print(f"保存失败: {e}")
 
-# 清空知识库
+    # 清空知识库
 
 
-def reset_knowledge_base():
-    """
-    全清函数：抹除向量库、清空哈希账本、删除原始 RAG 文件
-    """
-    print("(🐾) 正在执行全清程序，请稍候喵...")
+    def reset_rag_system():
+        print("🚀 开始清理 RAG 系统数据...")
 
-    # 1. 定义相关路径
-    vector_db_path = get_abs_path("data/vector_db")
-    hash_list_path = get_abs_path("data/file_hash.txt")
-    rag_files_dir = get_abs_path("data/rag_file")
+        # 1. 清理向量数据库 (Chroma)
+        if os.path.exists(VECTOR_DB):
+            try:
+                # Chroma 建议直接物理删除文件夹最彻底
+                shutil.rmtree(VECTOR_DB)
+                print(f"✅ 已删除向量库文件夹: {VECTOR_DB}")
+            except Exception as e:
+                print(f"❌ 删除向量库失败 (可能文件被占用): {e}")
+        
+        # 2. 清理父类数据库 (SQLite)
+        if os.path.exists(PARENT_DB):
+            try:
+                os.remove(PARENT_DB)
+                print(f"✅ 已删除父类数据库文件: {PARENT_DB}")
+            except Exception as e:
+                print(f"❌ 删除父类数据库失败: {e}")
 
-    try:
-        # 清空向量库目录
-        if os.path.exists(vector_db_path):
-            # 删除整个文件夹来确保彻底清空
-            shutil.rmtree(vector_db_path)
-            os.makedirs(vector_db_path, exist_ok=True)
+        # 3. 重置哈希记录
+        if os.path.exists(HASH_FILE_PATH):
+            try:
+                os.remove(HASH_FILE_PATH)
+                print(f"✅ 已重置哈希记录文件: {HASH_FILE_PATH}")
+            except Exception as e:
+                print(f"❌ 重置哈希记录失败: {e}")
 
-        # 重置哈希账本
-        if os.path.exists(hash_list_path):
-            with open(hash_list_path, "w", encoding="utf-8") as f:
-                f.truncate(0)
-
-        # 清理原始上传文件
-        if os.path.exists(rag_files_dir):
-            for filename in os.listdir(rag_files_dir):
-                file_path = os.path.join(rag_files_dir, filename)
-                if os.path.isfile(file_path):
-                    os.remove(file_path)
-
-        print("\n✨所有知识记忆已全部重置，我现在啥也不懂啦~")
-        return True
-
-    except Exception as e:
-        print(f"❌ 呜呜...清理过程中出错了: {e}")
-        return False
-
+        print("\n✨ 清理完成！现在你可以重新运行入库脚本了喵~")
 
 if __name__ == "__main__":
-    reset_knowledge_base()
+    rag_storage = ParentDocument()
+    rag_storage.save_to_rag(get_abs_path(r"data/rag_file/如何成为galgame高手.txt"))
+    # reset_rag_system()

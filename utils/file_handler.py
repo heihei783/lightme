@@ -10,7 +10,7 @@ import hashlib
 #加载不同的文本
 def pdf_loader(filepath:str,passwd:str = None) -> list[Document]:
     return PyPDFLoader(filepath,passwd).load()
-    
+
 
 def txt_loader(filepath:str ) -> list[Document]:
     return TextLoader(filepath,encoding="utf-8").load()
@@ -32,40 +32,60 @@ def get_file_list(dir_path:str) -> list[str]:
             file_path = os.path.join(root, file)
             file_path_list.append(file_path)
     return file_path_list
-        
-        
-    
+
+ #判断文件类型
+def get_file_type(file_path:str) -> str:
+    if file_path.endswith(".pdf"):
+        return pdf_loader(file_path)
+    elif file_path.endswith(".txt"):
+        return txt_loader(file_path)
+    elif file_path.endswith(".md"):
+        return md_loader(file_path)
+    elif file_path.endswith(".docx"):
+        return docx_loader(file_path)
+
+
+#获取文件里面的每一个document对象
+def get_file_doc(abs_path:str) -> list[Document]:
+    if os.path.isfile(abs_path):
+        # 如果传入的是直接的文件路径，直接放进列表
+        file_path_list = [abs_path]
+        print(f"📄 处理单个文件: {abs_path}")
+    elif os.path.isdir(abs_path):
+        # 如果传入的是文件夹，才去执行扫描
+        file_path_list = get_file_list(abs_path)
+        print(f"📂 扫描文件夹: {abs_path}，找到 {len(file_path_list)} 个文件")
+    else:
+        print(f"❌ 路径不存在: {abs_path}")
+        return []
+    docs = []
+    for file_path in file_path_list:
+        docs.extend(get_file_type(file_path))
+    return docs
+
+
 
 #文本切割
-def child_splitter(text:list[Document]):
+def child_splitter():
     child_splitter = RecursiveCharacterTextSplitter(
         chunk_size=config_ai.get("child_chunk_size",200),
         chunk_overlap=config_ai.get("chunk_overlap",20),
         separators=config_ai.get("parent_separators", ["\n\n", "\n", "。", "！", "？", " ", ""])
         )
-    
-    return child_splitter.split_documents(text)
+
+    return child_splitter
 
 
-def parent_splitter(text:list[Document]):
+def parent_splitter():
     parent_splitter = RecursiveCharacterTextSplitter(
         chunk_size=config_ai.get("parent_chunk_size",1000),
         chunk_overlap=config_ai.get("chunk_overlap",20),
         separators=config_ai.get("parent_separators", ["\n\n", "\n", "。", "！", "？", " ", ""])
         )
-    
-    return parent_splitter.split_documents(text)
+
+    return parent_splitter
 #-----------------------------------------------
-# #判断文件类型
-# def get_file_type(file_path:str) -> str:
-#     if file_path.endswith(".pdf"):
-#         return pdf_loader(file_path)
-#     elif file_path.endswith(".txt"):
-#         return txt_loader(file_path)
-#     elif file_path.endswith(".md"):
-#         return md_loader(file_path)
-#     elif file_path.endswith(".docx"):
-#         return docx_loader(file_path)
+
 
 
 # #加载知识库并切割
@@ -74,7 +94,7 @@ def parent_splitter(text:list[Document]):
 
 #     # 进行切分
 #     splits = child_splitter(valid_raw_docs)
-    
+
 #     final_splits = []
 #     for doc in splits:
 #         clean_content = doc.page_content.strip()
@@ -128,10 +148,10 @@ def create_chat_tempt() -> str:
 def create_rag_tempt() -> str:
     prompt = txt_loader(get_abs_path(r"app\llm\prompts\rag_prompt.txt"))[0].page_content
     template = ChatPromptTemplate.from_messages(
-        [("system",prompt),
+        [("system", prompt),
         MessagesPlaceholder(variable_name="history_messages"),
-        ("human","{input}")
-]
+        ("human", "以下是检索到的上下文信息：\n{context}\n\n请根据以上上下文回答用户问题：{input}")
+    ]
     )
     return template
 
@@ -140,7 +160,7 @@ def create_agent_tempt() -> str:
     prompt = txt_loader(get_abs_path(r"app\llm\prompts\agent_prompt.txt"))[0].page_content
 
     return prompt
-    
+
 
 chat_prompt = create_chat_tempt()
 rag_prompt = create_rag_tempt()
