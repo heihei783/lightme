@@ -49,29 +49,37 @@ class AdvancedRAG:
         return docs
 
     def run_pipeline(self, question: str):
-        """完整的进阶 RAG 流水线"""
-        
+        """完整的进阶 RAG 流水线（含内部路由决策）"""
+
         # 第一步：路由决策
         if self.query_router(question) == "chat":
             return None # 走普通对话逻辑
 
         # 第二步：查询转换（把 1 个问题变 4 个）
         all_queries = self.query_transform(question)
-        
+
         # 第三步：层次化检索 (Hierarchical + Enrichment)
         final_docs = []
         for q in all_queries:
-            # 这里的检索会自动返回更有逻辑的“父块”
+            # 这里的检索会自动返回更有逻辑的”父块”
             docs = self.hierarchical_search(q)
             final_docs.extend(docs)
-        
+
         # 第四步：去重
         unique_docs = {doc.page_content: doc for doc in final_docs}.values()
         return list(unique_docs)
-rag = AdvancedRAG()
-# 使用方式
-# rag = AdvancedRAG()
-# docs = rag.run_pipeline("你的猫娘设定是什么？")
+
+    def search_only(self, question: str):
+        """跳过内部 query_router，直接执行查询转换 + 层次检索
+        用于主路由已确定走 RAG 时，避免重复的意图判断"""
+        all_queries = self.query_transform(question)
+        final_docs = []
+        for q in all_queries:
+            docs = self.hierarchical_search(q)
+            final_docs.extend(docs)
+        unique_docs = {doc.page_content: doc for doc in final_docs}.values()
+        return list(unique_docs)
+
 
 
 

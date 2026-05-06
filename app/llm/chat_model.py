@@ -1,6 +1,15 @@
+import os
+
+# 禁用 LiteLLM 遥测/日志，避免国内网络拉取 GitHub 价格表时报错
+# 必须在 import litellm 之前设置
+os.environ["LITELLM_MODE"] = "development"
+os.environ["LITELLM_LOG"] = "ERROR"
+
+import litellm
 from langchain_community.chat_models import ChatLiteLLM
 from utils.config_handler import config_ai
 
+litellm.set_verbose = False
 
 #聊天大模型
 def get_chat_model():

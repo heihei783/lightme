@@ -1,87 +1,104 @@
-from typing import TypedDict, Annotated, List, Literal
-from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
-from langchain_core.tools import tool
-from app.llm.chat_model import chat_model
-from utils.file_handler import txt_loader
-from utils.path_tool import get_abs_path
+"""
+LangGraph 通用 Agent 系统 — 兼容入口
 
-# ==================== 1. 工具定义 ====================
+功能模块已拆分到：
+  - memory.py:     AgentMemory 记忆系统
+  - tools.py:      工具定义 (@tool 函数 + DEFAULT_TOOLS)
+  - skills.py:     Skill / SkillRegistry 技能系统
+  - agent_graph.py: LangGraph 图节点、状态、路由、agent_graph 编译、对外接口
+"""
 
-@tool
-def search_knowledge_base(query: str) -> str:
-    """在本地知识库中搜索相关文档。当需要查找资料、文件内容或专业知识时使用此工具。
-    参数 query: 搜索查询字符串。"""
-    from utils.rag_handler import AdvancedRAG
-    rag = AdvancedRAG()
-    docs = rag.run_pipeline(query)
-    if docs is None:
-        return "未在知识库中找到相关文档"
-    return "\n\n".join([doc.page_content for doc in docs])
-
-
-tools = [search_knowledge_base]
-
-# ==================== 2. 定义状态 ====================
-
-class AgentState(TypedDict):
-    messages: Annotated[List, add_messages]
-
-# ==================== 3. 定义节点 ====================
-
-def agent_node(state: AgentState) -> AgentState:
-    """Agent 思考节点：LLM 决定是调用工具还是直接回答"""
-    model_with_tools = chat_model.bind_tools(tools)
-    response = model_with_tools.invoke(
-        [("system", _get_system_prompt())] + state["messages"]
-    )
-    return {"messages": [response]}
-
-
-tool_node = ToolNode(tools)
-
-# ==================== 4. 路由逻辑 ====================
-
-def should_continue(state: AgentState) -> Literal["tools", "end"]:
-    """判断 Agent 是否需要继续调用工具"""
-    last_msg = state["messages"][-1]
-    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-        return "tools"
-    return "end"
-
-# ==================== 5. 构建图 ====================
-
-agent_workflow = StateGraph(AgentState)
-
-agent_workflow.add_node("agent", agent_node)
-agent_workflow.add_node("tools", tool_node)
-
-agent_workflow.set_entry_point("agent")
-
-# 条件边：需要工具 → tools，不需要 → 结束
-agent_workflow.add_conditional_edges(
-    "agent",
-    should_continue,
-    {"tools": "tools", "end": END}
+# 从各子模块重导出，保持外部 import 路径兼容
+from app.agent.memory import AgentMemory, agent_memory
+from app.agent.tools import (
+    search_knowledge_base,
+    execute_python_code,
+    read_file_content,
+    write_file_content,
+    execute_shell_command,
+    DEFAULT_TOOLS,
 )
-# tools 执行完 → 回到 agent 继续思考（形成循环）
-agent_workflow.add_edge("tools", "agent")
+from app.agent.skills import Skill, SkillRegistry, skill_registry
+from app.agent.agent_graph import (
+    AgentState,
+    COORDINATOR_PROMPT,
+    RESEARCHER_PROMPT,
+    EXECUTOR_PROMPT,
+    CRITIC_PROMPT,
+    # 图节点
+    planning_node,
+    skill_select_node,
+    executor_node,
+    tool_executor_node,
+    reflection_node,
+    collaboration_node,
+    finalize_node,
+    # 路由
+    should_continue_tools,
+    should_continue_plan,
+    decide_after_reflection,
+    # 图
+    agent_workflow,
+    agent_graph,
+    # 对外接口
+    run_agent,
+    add_skill,
+    remove_skill,
+    list_skills,
+    get_memory,
+)
 
-agent_graph = agent_workflow.compile()
+__all__ = [
+    "AgentMemory", "agent_memory",
+    "search_knowledge_base", "execute_python_code", "read_file_content",
+    "write_file_content", "execute_shell_command", "DEFAULT_TOOLS",
+    "Skill", "SkillRegistry", "skill_registry",
+    "AgentState",
+    "COORDINATOR_PROMPT", "RESEARCHER_PROMPT", "EXECUTOR_PROMPT", "CRITIC_PROMPT",
+    "planning_node", "skill_select_node", "executor_node", "tool_executor_node",
+    "reflection_node", "collaboration_node", "finalize_node",
+    "should_continue_tools", "should_continue_plan", "decide_after_reflection",
+    "agent_workflow", "agent_graph",
+    "run_agent", "add_skill", "remove_skill", "list_skills", "get_memory",
+]
 
-# ==================== 6. 辅助函数 ====================
 
-def _get_system_prompt() -> str:
-    """组合人格提示词 + 工具提示词"""
-    chat_prompt_text = txt_loader(
-        get_abs_path(r"app\llm\prompts\chat_prompt.txt")
-    )[0].page_content
+# ====================================================================
+# 测试入口
+# ====================================================================
+if __name__ == "__main__":
+    print("=" * 60)
+    print("LangGraph 增强 Agent 系统测试")
+    print("=" * 60)
 
-    return (
-        f"人格设定：\n{chat_prompt_text}\n\n"
-        f"你是一个能够使用工具的智能助手。\n"
-        f"当需要查找资料时，使用 search_knowledge_base 工具搜索本地知识库。\n"
-        f"使用工具找到资料后，请用自然的语气向主人汇报结果，不要死板地复述。\n"
-        f"如果不需要使用工具，直接与主人对话即可。"
+    # 测试1: 技能系统
+    print("\n[*] 已注册技能:")
+    for s in list_skills():
+        print(f"  • {s['name']} [{s['category']}]: {s['description']}")
+
+    # 测试2: 记忆系统
+    print("\n[*] 记忆系统测试:")
+    agent_memory.save_long_term("test_fact", "Python 是一种高级编程语言", importance=0.8)
+    agent_memory.save_episodic(
+        task="测试任务",
+        approach="直接执行",
+        result="成功",
+        reflection="简单任务无需拆解",
+        success=True,
+        tags=["test"]
     )
+    recalled = agent_memory.recall_long_term("test_fact")
+    print(f"  长期记忆检索: {recalled}")
+
+    similar = agent_memory.recall_similar_episodes("测试")
+    print(f"  情景记忆检索: {len(similar)} 条相似经验")
+
+    # 测试3: 技能匹配
+    print("\n[*] 技能匹配测试:")
+    skill = skill_registry.match("帮我搜索一下 Python 教程")
+    if skill:
+        print(f"  匹配到技能: {skill.name}")
+    else:
+        print("  未匹配到技能")
+
+    print("\n[OK] Agent 系统就绪!")
