@@ -119,3 +119,4 @@ if __name__ == "__main__":
     response = client.search("今年世界杯的时间是什么时候？")
     items = response.get("results", []) if isinstance(response, dict) else []
     print(items)
+    
