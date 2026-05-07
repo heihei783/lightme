@@ -64,17 +64,26 @@ class MainState(TypedDict):
 # 2. 路由节点 —— 意图识别与分流
 # ====================================================================
 
-def _build_intent_prompt(question: str, rag_open: bool, agent_open: bool) -> str:
-    """动态构建意图识别 prompt，包含知识库文档名、工具列表、技能列表"""
+def _build_intent_prompt(question: str, rag_open: bool, agent_open: bool,
+                         history: str = "") -> str:
+    """动态构建意图识别 prompt，包含对话历史、知识库文档名、工具列表、技能列表"""
 
     parts = [
-        "你是一个意图识别助手。根据用户的问题，判断用户意图是以下三种之一：",
+        "你是一个意图识别助手。请结合对话上下文判断用户当前问题的意图：",
         "",
         "1. chat  - 普通闲聊、日常问候、简单问答，不涉及知识库文档和工具调用",
         "2. rag   - 需要查询知识库中的文档来回答用户问题",
-        "3. agent - 需要使用工具来执行代码、读写文件、搜索知识库或运行系统命令",
+        "3. agent - 需要使用工具来执行代码、读写文件、联网搜索或运行系统命令",
+        "",
+        "重要：如果当前问题是上一轮的追问或延续（如'再看看'、'还有吗'、'继续'等），",
+        "应沿用上一轮的意图而非重新判断。",
         "",
     ]
+
+    if history:
+        parts.append("【最近的对话历史】")
+        parts.append(history)
+        parts.append("")
 
     if rag_open:
         rag_dir = get_abs_path("data/rag_file")
@@ -106,7 +115,7 @@ def _build_intent_prompt(question: str, rag_open: bool, agent_open: bool) -> str
             parts.append(f"  - {skill['name']} ({skill['category']}): {skill['description']}")
         parts.append("")
 
-    parts.append(f"【用户问题】{question}")
+    parts.append(f"【用户当前问题】{question}")
     parts.append("")
     parts.append("请只返回一个词：chat、rag 或 agent。")
 
@@ -119,11 +128,20 @@ def router_node(state: MainState) -> MainState:
 
     流程:
       1. agent_open / rag_open 均关闭 → 直接走 chat
-      2. 至少一个开启 → 构建意图识别 prompt (含文档名/工具/技能列表)
+      2. 至少一个开启 → 构建意图识别 prompt (含对话历史/文档名/工具/技能列表)
       3. AI 判断意图 → chat / rag / agent
       4. rag 意图时用 search_only 检索 (跳过 RAG 内部的重复路由判断)
     """
     last_msg = state["messages"][-1].content
+
+    # 提取最近几轮对话作为上下文（当前消息除外）
+    all_msgs = state["messages"]
+    history_parts = []
+    for msg in all_msgs[-7:-1]:  # 取当前消息之前最多 6 条
+        role = "用户" if getattr(msg, "type", "") == "human" else "助手"
+        content = msg.content if hasattr(msg, "content") else str(msg)
+        history_parts.append(f"[{role}]: {content[:200]}")
+    history_context = "\n".join(history_parts) if history_parts else ""
 
     rag_open = config_ai.get("rag_open", False)
     agent_open = config_ai.get("agent_open", False)
@@ -133,8 +151,8 @@ def router_node(state: MainState) -> MainState:
         print("用户的意图是：chat (开关均关闭)")
         return {"route": "chat"}
 
-    # AI 意图识别
-    intent_prompt = _build_intent_prompt(last_msg, rag_open, agent_open)
+    # AI 意图识别（含对话历史）
+    intent_prompt = _build_intent_prompt(last_msg, rag_open, agent_open, history_context)
     try:
         intent = chat_model.invoke(intent_prompt).content.strip().lower()
         if intent not in ("chat", "rag", "agent"):

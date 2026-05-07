@@ -10,7 +10,7 @@ LangGraph 通用 Agent 系统
 """
 
 import json
-from typing import TypedDict, Annotated, List, Literal, Any, Dict, Callable
+from typing import TypedDict, Annotated, List, Literal, Any, Dict
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
@@ -19,7 +19,8 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from app.llm.chat_model import chat_model
 from app.agent.memory import agent_memory
-from app.agent.skills import skill_registry, Skill
+from app.agent.skill_loader import SkillDef
+from app.agent.skills import skill_registry
 from app.agent.tools import DEFAULT_TOOLS
 from utils.file_handler import txt_loader
 from utils.path_tool import get_abs_path
@@ -299,7 +300,29 @@ def executor_node(state: AgentState) -> AgentState:
     model_with_tools = chat_model.bind_tools(DEFAULT_TOOLS)
 
     memory_ctx = state.get("memory_context", "")
-    system_prompt = _get_system_prompt("executor") + (
+    system_prompt = _get_system_prompt("executor")
+
+    # 注入当前选中技能的指令指南
+    active_skills = state.get("active_skills", [])
+    if active_skills and active_skills[0] != "general_llm":
+        skill_name = active_skills[0]
+        skill_instructions = skill_registry.get_instructions(skill_name)
+        if skill_instructions:
+            system_prompt += (
+                f"\n\n=== 当前技能指南: {skill_name} ===\n"
+                f"{skill_instructions}\n"
+                f"请严格按照以上技能指南完成当前子任务。"
+            )
+        else:
+            skill = skill_registry.get_by_name(skill_name)
+            if skill:
+                system_prompt += (
+                    f"\n\n=== 当前技能: {skill_name} ===\n"
+                    f"描述: {skill.description}\n"
+                    f"请使用可用工具完成当前子任务。"
+                )
+
+    system_prompt += (
         f"\n\n当前子任务: {task_desc}\n"
         f"请专注于完成这个子任务，完成后给出明确的执行结果。"
     )
@@ -420,7 +443,7 @@ def collaboration_node(state: AgentState) -> AgentState:
     collaboration_log.append(f"[Coordinator] 开始协调任务: {plan_goal[:100]}")
 
     research_needed = any(
-        st.get("skill") in ("knowledge_search", "file_reader") or
+        st.get("skill") in ("web_searcher", "file_reader") or
         any(kw in st.get("desc", "") for kw in ["搜索", "查找", "读取", "检索"])
         for st in plan.get("subtasks", [])
     )
@@ -643,8 +666,23 @@ def run_agent(messages: List) -> str:
     return result.get("final_output", "") or "抱歉，我没有处理好你的请求喵~"
 
 
-def add_skill(name: str, description: str, func: Callable, keywords: List[str] = None, category: str = "general"):
-    skill = Skill(name, description, func, keywords, category)
+def add_skill(name: str, description: str, instructions: str = "", keywords: List[str] = None, category: str = "general"):
+    """注册一个新技能（Markdown 指令形式）。
+
+    Args:
+        name: 技能名称（全局唯一）
+        description: 技能描述（用于 LLM 判断何时使用）
+        instructions: 技能指令文本（注入 executor 系统提示词）
+        keywords: 触发关键词列表
+        category: 技能分类 (search / execute / analyze / create / general)
+    """
+    skill = SkillDef(
+        name=name,
+        description=description,
+        instructions=instructions,
+        keywords=keywords or [],
+        category=category,
+    )
     skill_registry.register(skill)
 
 

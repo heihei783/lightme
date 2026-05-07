@@ -18,7 +18,7 @@ from app.agent.tools import (
     execute_shell_command,
     DEFAULT_TOOLS,
 )
-from app.agent.skills import Skill, SkillRegistry, skill_registry
+from app.agent.skills import SkillDef, Skill, SkillRegistry, skill_registry
 from app.agent.agent_graph import (
     AgentState,
     COORDINATOR_PROMPT,
@@ -52,7 +52,7 @@ __all__ = [
     "AgentMemory", "agent_memory",
     "search_knowledge_base", "execute_python_code", "read_file_content",
     "write_file_content", "execute_shell_command", "DEFAULT_TOOLS",
-    "Skill", "SkillRegistry", "skill_registry",
+    "SkillDef", "Skill", "SkillRegistry", "skill_registry",
     "AgentState",
     "COORDINATOR_PROMPT", "RESEARCHER_PROMPT", "EXECUTOR_PROMPT", "CRITIC_PROMPT",
     "planning_node", "skill_select_node", "executor_node", "tool_executor_node",
