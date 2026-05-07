@@ -9,19 +9,6 @@ from utils.config_handler import config_ai
 from langchain_core.tools import tool
 
 
-@tool
-def search_knowledge_base(query: str) -> str:
-    """
-    在本地知识库中搜索相关文档。当需要查找资料、文件内容或专业知识时使用此工具。
-    参数 query: 搜索查询字符串。
-    """
-    from utils.rag_handler import AdvancedRAG
-    rag = AdvancedRAG()
-    docs = rag.run_pipeline(query)
-    if docs is None:
-        return "未在知识库中找到相关文档"
-    return "\n\n".join([doc.page_content for doc in docs])
-
 
 @tool
 def execute_python_code(code: str) -> str:
