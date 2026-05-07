@@ -139,17 +139,12 @@ skill_registry = SkillRegistry()
 def _register_default_skills():
     """注册系统内置的默认技能"""
     from app.agent.tools import (
-        search_knowledge_base, execute_python_code,
-        read_file_content, write_file_content, execute_shell_command
+        execute_python_code,
+        read_file_content, write_file_content, execute_shell_command,
+        web_search,
     )
 
-    skill_registry.register(Skill(
-        name="knowledge_search",
-        description="在本地知识库中搜索文档和信息",
-        func=search_knowledge_base,
-        keywords=["搜索", "查找", "知识库", "检索", "搜索知识", "查资料", "search", "find"],
-        category="search"
-    ))
+    # 注意: knowledge_search 技能已移除 —— 知识库检索由 RAG 路由处理
 
     skill_registry.register(Skill(
         name="python_executor",
@@ -181,6 +176,14 @@ def _register_default_skills():
         func=execute_shell_command,
         keywords=["命令", "shell", "终端", "cmd", "执行命令", "terminal", "bash", "command"],
         category="execute"
+    ))
+
+    skill_registry.register(Skill(
+        name="web_searcher",
+        description="使用 TAVILY 联网搜索引擎查询最新资讯和实时信息",
+        func=web_search,
+        keywords=["联网", "上网", "搜索", "查找", "资讯", "新闻", "实时", "最新", "web", "search", "tavily"],
+        category="search"
     ))
 
 

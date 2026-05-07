@@ -214,7 +214,7 @@ def agent_node(state: MainState) -> MainState:
       6. Finalize:      汇总所有结果，生成最终回答
 
     Agent 可用的能力:
-      - search_knowledge_base:  本地知识库检索
+      - web_search:             联网搜索最新信息
       - execute_python_code:    执行 Python 代码
       - read_file_content:      读取文件
       - write_file_content:     写入文件

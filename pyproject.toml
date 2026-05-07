@@ -21,5 +21,6 @@ dependencies = [
     "pypdf>=6.9.2",
     "pywebview>=6.1",
     "pyyaml>=6.0.3",
+    "tavily-python>=0.7.24",
     "unstructured>=0.21.5",
 ]

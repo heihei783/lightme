@@ -4,7 +4,8 @@ Agent 工具定义 —— Agent 可调用的所有工具函数
 
 import os
 import subprocess
-
+from tavily import TavilyClient
+from utils.config_handler import config_ai
 from langchain_core.tools import tool
 
 
@@ -93,13 +94,41 @@ def execute_shell_command(command: str) -> str:
         return "命令执行超时 (30秒)"
     except Exception as e:
         return f"命令执行出错: {str(e)}"
+    
+@tool
+def web_search(query: str) -> str:
+    """
+    使用 TAVILY 联网搜索引擎进行查询，返回搜索结果摘要。
+    当需要获取最新资讯、实时信息或知识库中不存在的内容时使用此工具。
+    参数 query: 搜索查询字符串。
+    """
+    client = TavilyClient(api_key=config_ai.get("TAVILY_API_KEY"))
+    response = client.search(query)
+    items = response.get("results", []) if isinstance(response, dict) else []
+    if not items:
+        return "未找到相关搜索结果"
+    response_news = "\n\n".join([
+        f"标题: {item['title']}\n内容: {item['content'][:500]}"
+        for item in items[:5]
+    ])
+    print(response_news[:20])
+    return f"搜索结果是{response_news}"
 
 
 # 默认工具集，可通过 skill_registry 扩展
+# 注意: search_knowledge_base 不在此列 —— 知识库检索由 RAG 路由处理，不在 Agent 工具范围内
 DEFAULT_TOOLS = [
-    search_knowledge_base,
     execute_python_code,
     read_file_content,
     write_file_content,
     execute_shell_command,
+    web_search,
 ]
+
+
+
+if __name__ == "__main__":
+    client = TavilyClient(api_key=config_ai.get("TAVILY_API_KEY"))
+    response = client.search("今年世界杯的时间是什么时候？")
+    items = response.get("results", []) if isinstance(response, dict) else []
+    print(items)

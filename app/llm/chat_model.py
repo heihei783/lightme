@@ -4,6 +4,8 @@ import os
 # 必须在 import litellm 之前设置
 os.environ["LITELLM_MODE"] = "development"
 os.environ["LITELLM_LOG"] = "ERROR"
+os.environ["LITELLM_TELEMETRY"] = "False"
+os.environ["LITELLM_LOCAL"] = "True"
 
 import litellm
 from langchain_community.chat_models import ChatLiteLLM

@@ -62,7 +62,7 @@ COORDINATOR_PROMPT = """你是一个智能协调者 (Coordinator Agent)，负责
 RESEARCHER_PROMPT = """你是一个专业研究者 (Researcher Agent)，负责信息检索和知识查询。
 
 你的专长：
-1. **知识库检索**：使用 search_knowledge_base 工具搜索本地知识库
+1. **联网搜索**：使用 web_search 工具获取最新信息
 2. **文件分析**：使用 read_file_content 工具阅读和分析文件
 3. **信息整理**：将检索到的信息结构化、去重、提炼关键点
 
@@ -127,15 +127,15 @@ def _get_system_prompt(role: str = "coordinator") -> str:
         for s in skill_registry.list_all()
     ])
 
+    tools_info = "\n".join([
+        f"  - {t.name}: {(t.description or '').split(chr(10))[0][:100]}"
+        for t in DEFAULT_TOOLS
+    ])
+
     return (
         f"=== 角色职责 ===\n{role_prompt}\n\n"
         f"=== 可用技能 ===\n{skills_info}\n\n"
-        f"=== 可用工具 ===\n"
-        f"  - search_knowledge_base: 搜索本地知识库\n"
-        f"  - execute_python_code: 执行 Python 代码\n"
-        f"  - read_file_content: 读取文件内容\n"
-        f"  - write_file_content: 写入文件内容\n"
-        f"  - execute_shell_command: 执行 Shell 命令\n"
+        f"=== 可用工具 ===\n{tools_info}\n"
     )
 
 
@@ -294,13 +294,9 @@ def executor_node(state: AgentState) -> AgentState:
 
     current_task = subtasks[current_idx - 1]
     task_desc = current_task.get("desc", "")
-    current_skill_name = agent_memory.get_working("current_skill", "general_llm")
 
-    skill = skill_registry.get_by_name(current_skill_name)
-    if skill and hasattr(skill.func, "_is_tool") or current_skill_name == "general_llm":
-        model_with_tools = chat_model.bind_tools(DEFAULT_TOOLS)
-    else:
-        model_with_tools = chat_model
+    # 始终绑定工具——LLM 自行决定是否调用
+    model_with_tools = chat_model.bind_tools(DEFAULT_TOOLS)
 
     memory_ctx = state.get("memory_context", "")
     system_prompt = _get_system_prompt("executor") + (
