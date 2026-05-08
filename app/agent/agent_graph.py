@@ -32,13 +32,13 @@ from utils.path_tool import get_abs_path
 
 class AgentState(TypedDict):
     messages: Annotated[List, add_messages]
-    plan: Dict[str, Any]
-    memory_context: str
-    collaboration_log: List[str]
-    active_skills: List[str]
-    final_output: str
-    tool_iterations: int
-    subtask_retries: int
+    plan: Dict[str, Any]#任务规划结构
+    memory_context: str#长期/情景记忆检索相关背景知识
+    collaboration_log: List[str]#多 Agent 协作日志
+    active_skills: List[str]#当前子任务匹配到的技能名列表
+    final_output: str#最终输出结果
+    tool_iterations: int#工具调用迭代次数
+    subtask_retries: int#子任务重试次数
 
 
 # ====================================================================

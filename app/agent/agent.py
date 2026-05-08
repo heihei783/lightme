@@ -11,7 +11,6 @@ LangGraph 通用 Agent 系统 — 兼容入口
 # 从各子模块重导出，保持外部 import 路径兼容
 from app.agent.memory import AgentMemory, agent_memory
 from app.agent.tools import (
-    search_knowledge_base,
     execute_python_code,
     read_file_content,
     write_file_content,
