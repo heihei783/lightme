@@ -81,8 +81,9 @@ EXECUTOR_PROMPT = """你是一个专业执行者 (Executor Agent)，负责实际
 
 工作原则：
 - 安全第一：执行任何操作前评估风险
-- 结果验证：执行后检查输出是否正确
-- 错误处理：遇到错误时分析原因并提供解决建议"""
+- 信任工具返回值：工具的返回结果已经包含成功/失败信息，无需反复验证
+- 见好就收：工具返回成功结果后，直接基于该结果给出回复，不要重复调用
+- 错误处理：遇到错误时分析原因并调整策略，但不重复执行已成功的操作"""
 
 CRITIC_PROMPT = """你是一个专业评审者 (Critic Agent)，负责审查执行结果并提供反馈。
 
@@ -146,11 +147,19 @@ def _get_system_prompt(role: str = "coordinator") -> str:
 
 # -------------------- 节点1: 规划节点 --------------------
 def planning_node(state: AgentState) -> AgentState:
+    print("\n" + "=" * 60)
+    print("📋 [Planning] 规划节点 —— 分析任务复杂度并拆解子任务")
+    print("=" * 60)
+
     last_msg = state["messages"][-1]
     user_request = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+    print(f"  用户请求: {user_request[:100]}")
 
     memory_ctx = agent_memory.get_context_for_task(user_request)
     agent_memory.set_working("current_task", user_request)
+
+    if memory_ctx:
+        print(f"  相关记忆: {memory_ctx[:80]}...")
 
     complexity_prompt = (
         f"判断以下任务的复杂度，只返回一个词 (simple/medium/complex)：\n\n"
@@ -163,6 +172,8 @@ def planning_node(state: AgentState) -> AgentState:
             complexity = "medium"
     except Exception:
         complexity = "medium"
+
+    print(f"  复杂度判定: {complexity}")
 
     if complexity == "simple":
         plan = {
@@ -212,6 +223,11 @@ def planning_node(state: AgentState) -> AgentState:
 
     agent_memory.set_working("plan", plan)
 
+    print(f"  子任务数: {len(plan.get('subtasks', []))}")
+    for i, st in enumerate(plan.get("subtasks", []), 1):
+        skill_info = f" → 技能: {st['skill']}" if st.get("skill") else ""
+        print(f"    [{i}] {st['desc'][:80]}{skill_info}")
+
     plan_summary = (
         f"[Plan] **任务规划完成**\n"
         f"  目标: {plan.get('goal', 'N/A')}\n"
@@ -243,18 +259,25 @@ def skill_select_node(state: AgentState) -> AgentState:
     current_task = subtasks[current_idx - 1]
     task_desc = current_task.get("desc", "")
 
+    print("\n" + "-" * 40)
+    print(f"🎯 [SkillSelect] 技能选择 —— 子任务 {current_idx}: {task_desc[:60]}")
+    print("-" * 40)
+
     if current_task.get("skill"):
         skill = skill_registry.get_by_name(current_task["skill"])
         if skill:
+            print(f"  规划推荐技能: {skill.name}")
             agent_memory.set_working("current_skill", skill.name)
             return {
                 "active_skills": [skill.name],
                 "tool_iterations": 0,
                 "messages": [AIMessage(content=f"[Tool] 选择技能: {skill.name} — {skill.description}")]
             }
+        print(f"  规划推荐技能 '{current_task['skill']}' 未找到，尝试自动匹配...")
 
     matched_skill = skill_registry.match(task_desc)
     if matched_skill:
+        print(f"  匹配结果: {matched_skill.name} [{matched_skill.category}]")
         agent_memory.set_working("current_skill", matched_skill.name)
         return {
             "active_skills": [matched_skill.name],
@@ -262,6 +285,7 @@ def skill_select_node(state: AgentState) -> AgentState:
             "messages": [AIMessage(content=f"[Tool] 自动匹配技能: {matched_skill.name} — {matched_skill.description}")]
         }
 
+    print("  未匹配到技能，使用通用 LLM")
     agent_memory.set_working("current_skill", "general_llm")
     return {
         "active_skills": ["general_llm"],
@@ -272,6 +296,30 @@ def skill_select_node(state: AgentState) -> AgentState:
 
 MAX_TOOL_ITERATIONS = 8
 MAX_SUBTASK_RETRIES = 3
+
+
+def _safe_truncate_history(messages: List, max_count: int = 5) -> List:
+    """从末尾取最近 N 条消息，但保证不切断 tool_calls / ToolMessage 配对。
+
+    从后往前扫描，如果第一条就是 ToolMessage，则继续往前直到找到对应的
+    AIMessage(tool_calls)，确保 API 不会收到孤立的 tool 消息。
+    """
+    if len(messages) <= max_count:
+        return messages
+
+    truncated = messages[-max_count:]
+    # 检查截断后第一条是否是孤立的 ToolMessage
+    if hasattr(truncated[0], "tool_call_id") and truncated[0].tool_call_id:
+        # 向前搜索对应的 AIMessage(tool_calls)，若被切断则多取一些
+        start_idx = len(messages) - max_count
+        while start_idx > 0:
+            prev = messages[start_idx - 1]
+            if hasattr(prev, "tool_calls") and prev.tool_calls:
+                start_idx -= 1
+                break
+            start_idx -= 1
+        truncated = messages[start_idx:]
+    return truncated
 
 
 # -------------------- 节点3: 执行节点 --------------------
@@ -285,7 +333,12 @@ def executor_node(state: AgentState) -> AgentState:
 
     tool_iterations = state.get("tool_iterations", 0)
 
+    print("\n" + "-" * 40)
+    print(f"⚡ [Executor] 执行节点 —— 子任务 {current_idx}/{len(subtasks)} | 工具调用 #{tool_iterations + 1}")
+    print("-" * 40)
+
     if tool_iterations >= MAX_TOOL_ITERATIONS:
+        print(f"  ⚠ 断路器熔断! 已达上限 {MAX_TOOL_ITERATIONS} 次")
         return {
             "messages": [AIMessage(
                 content=f"[CircuitBreaker] 工具调用已达上限 ({MAX_TOOL_ITERATIONS}次)，"
@@ -308,6 +361,7 @@ def executor_node(state: AgentState) -> AgentState:
         skill_name = active_skills[0]
         skill_instructions = skill_registry.get_instructions(skill_name)
         if skill_instructions:
+            print(f"  技能指南已注入: {skill_name} ({len(skill_instructions)} 字符)")
             system_prompt += (
                 f"\n\n=== 当前技能指南: {skill_name} ===\n"
                 f"{skill_instructions}\n"
@@ -316,11 +370,15 @@ def executor_node(state: AgentState) -> AgentState:
         else:
             skill = skill_registry.get_by_name(skill_name)
             if skill:
+                print(f"  使用技能: {skill_name} (无详细指令)")
                 system_prompt += (
                     f"\n\n=== 当前技能: {skill_name} ===\n"
                     f"描述: {skill.description}\n"
                     f"请使用可用工具完成当前子任务。"
                 )
+    else:
+        print(f"  模式: {'通用 LLM' if active_skills and active_skills[0] == 'general_llm' else '无技能'}")
+        print(f"  子任务: {task_desc[:80]}")
 
     system_prompt += (
         f"\n\n当前子任务: {task_desc}\n"
@@ -330,12 +388,19 @@ def executor_node(state: AgentState) -> AgentState:
     messages = [SystemMessage(content=system_prompt)]
     if memory_ctx:
         messages.append(SystemMessage(content=f"相关背景知识：\n{memory_ctx}"))
-    messages.extend(state["messages"][-5:])
+    messages.extend(_safe_truncate_history(state["messages"], max_count=5))
 
     try:
         response = model_with_tools.invoke(messages)
     except Exception as e:
+        print(f"  ❌ LLM 调用出错: {e}")
         response = AIMessage(content=f"执行出错: {str(e)}")
+
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        for tc in response.tool_calls:
+            print(f"  🔧 调用工具: {tc['name']}({str(tc.get('args', {}))[:100]})")
+    else:
+        print(f"  💬 LLM 回复: {response.content[:100]}...")
 
     agent_memory.set_working(f"subtask_{current_idx}_result", response.content)
 
@@ -374,10 +439,16 @@ def reflection_node(state: AgentState) -> AgentState:
         f"请简洁回复。"
     )
 
+    print("\n" + "-" * 40)
+    print(f"🔍 [Reflection] 反思节点 —— 评审子任务 {current_idx}: {task_desc[:50]}")
+    print("-" * 40)
+
     try:
         critic_response = chat_model.invoke(critic_prompt).content.strip()
     except Exception:
         critic_response = "完成"
+
+    print(f"  Critic 评审: {critic_response[:100]}...")
 
     subtask_retries = state.get("subtask_retries", 0)
 
@@ -403,8 +474,11 @@ def reflection_node(state: AgentState) -> AgentState:
     current_task["result"] = result_text[:500]
     current_task["critique"] = critic_response[:300]
 
+    print(f"  判定: {status} | 重试次数: {subtask_retries}/{MAX_SUBTASK_RETRIES}")
+
     if status == "completed":
         plan["current_subtask"] = current_idx + 1
+        print(f"  ✅ 子任务完成，推进到子任务 {plan['current_subtask']}")
 
     is_success = status == "completed"
     agent_memory.save_episodic(
@@ -433,9 +507,16 @@ def collaboration_node(state: AgentState) -> AgentState:
     plan = state.get("plan", {})
     collaboration_log = state.get("collaboration_log", [])
 
+    print("\n" + "=" * 60)
+    print("🤝 [Collaboration] 协作节点 —— 多 Agent 协调")
+    print("=" * 60)
+
     if plan.get("complexity") == "simple":
+        print("  复杂度: simple，跳过协作")
         collaboration_log.append("[Coordinator] 任务简单，无需多 Agent 协作")
         return {"collaboration_log": collaboration_log}
+
+    print(f"  复杂度: {plan.get('complexity')}，启动多 Agent 协作")
 
     user_request = agent_memory.get_working("current_task", "")
     plan_goal = plan.get("goal", user_request)
@@ -449,6 +530,7 @@ def collaboration_node(state: AgentState) -> AgentState:
     )
 
     if research_needed:
+        print("  [Coordinator → Researcher] 委派信息检索任务")
         collaboration_log.append("[Coordinator → Researcher] 委派信息检索任务")
         try:
             research_model = chat_model
@@ -457,11 +539,13 @@ def collaboration_node(state: AgentState) -> AgentState:
                 HumanMessage(content=f"请检索以下相关信息: {plan_goal}")
             ]
             research_response = research_model.invoke(research_messages)
+            print(f"  [Researcher → Coordinator] 检索完成: {research_response.content[:80]}...")
             collaboration_log.append(
                 f"[Researcher → Coordinator] 检索完成: {research_response.content[:200]}..."
             )
             agent_memory.set_working("research_result", research_response.content)
         except Exception as e:
+            print(f"  [Researcher] 检索出错: {e}")
             collaboration_log.append(f"[Researcher] 检索出错: {e}")
 
     execute_needed = any(
@@ -471,8 +555,10 @@ def collaboration_node(state: AgentState) -> AgentState:
     )
 
     if execute_needed:
+        print("  [Coordinator → Executor] 委派执行任务")
         collaboration_log.append("[Coordinator → Executor] 委派执行任务")
 
+    print("  [Coordinator → Critic] 请求质量评审")
     collaboration_log.append("[Coordinator → Critic] 请求质量评审")
 
     try:
@@ -487,11 +573,13 @@ def collaboration_node(state: AgentState) -> AgentState:
             ))
         ]
         critic_response = critic_model.invoke(critic_messages)
+        print(f"  [Critic → Coordinator] 评审完成: {critic_response.content[:80]}...")
         collaboration_log.append(
             f"[Critic → Coordinator] 评审完成: {critic_response.content[:200]}..."
         )
         agent_memory.set_working("critic_feedback", critic_response.content)
     except Exception as e:
+        print(f"  [Critic] 评审出错: {e}")
         collaboration_log.append(f"[Critic] 评审出错: {e}")
 
     collaboration_log.append("[Coordinator] 汇总所有 Agent 的输出")
@@ -521,6 +609,11 @@ def finalize_node(state: AgentState) -> AgentState:
         if st.get("result"):
             results_parts.append(f"[子任务{st['id']}]: {st['result'][:300]}")
 
+    print("\n" + "=" * 60)
+    print("📦 [Finalize] 汇总节点 —— 整合所有子任务结果，注入人格")
+    print("=" * 60)
+    print(f"  子任务完成数: {len(results_parts)}/{len(subtasks)}")
+
     all_results = "\n\n".join(results_parts) if results_parts else "任务已直接完成"
 
     user_request = agent_memory.get_working("current_task", "")
@@ -538,8 +631,10 @@ def finalize_node(state: AgentState) -> AgentState:
     try:
         final_response = chat_model.invoke(summarize_prompt)
         final_text = final_response.content
+        print(f"  最终回答: {final_text[:100]}...")
     except Exception:
         final_text = all_results
+        print(f"  ⚠ LLM 调用失败，使用原始结果")
 
     is_success = len(results_parts) > 0
     agent_memory.learn_from_interaction(
@@ -564,7 +659,9 @@ def should_continue_tools(state: AgentState) -> Literal["tools", "reflect"]:
     last_msg = state["messages"][-1]
     tool_iterations = state.get("tool_iterations", 0)
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls and tool_iterations < MAX_TOOL_ITERATIONS:
+        print(f"  ⏩ 路由: executor → tools (第 {tool_iterations + 1} 次工具调用)")
         return "tools"
+    print(f"  ⏩ 路由: executor → reflection")
     return "reflect"
 
 
@@ -574,13 +671,17 @@ def should_continue_plan(state: AgentState) -> Literal["skill_select", "finalize
     current_idx = plan.get("current_subtask", 1)
 
     if not subtasks or current_idx > len(subtasks):
+        print("  ⏩ 路由: collaboration → finalize (无子任务)")
         return "finalize"
     if current_idx <= len(subtasks):
         current_task = subtasks[current_idx - 1]
         if current_task.get("status") == "retry":
+            print(f"  ⏩ 路由: collaboration → skill_select (重试子任务 {current_idx})")
             return "skill_select"
         if current_task.get("status") == "adjust":
+            print(f"  ⏩ 路由: collaboration → skill_select (调整子任务 {current_idx})")
             return "skill_select"
+    print(f"  ⏩ 路由: collaboration → skill_select (子任务 {current_idx}/{len(subtasks)})")
     return "skill_select"
 
 
@@ -590,10 +691,13 @@ def decide_after_reflection(state: AgentState) -> Literal["planning", "skill_sel
     current_idx = plan.get("current_subtask", 1)
 
     if not subtasks or current_idx > len(subtasks):
+        print("  ⏩ 路由: reflection → finalize (全部子任务完成)")
         return "finalize"
     current_task = subtasks[current_idx - 1]
     if current_task.get("status") == "adjust":
+        print("  ⏩ 路由: reflection → planning (需要重新规划)")
         return "planning"
+    print(f"  ⏩ 路由: reflection → skill_select (继续子任务 {current_idx})")
     return "skill_select"
 
 
@@ -647,6 +751,11 @@ agent_graph = agent_workflow.compile()
 # ====================================================================
 
 def run_agent(messages: List) -> str:
+    print("\n" + "█" * 60)
+    print("█  Agent 系统启动")
+    print("█" * 60)
+    print(f"  输入消息数: {len(messages)}")
+
     initial_state = {
         "messages": messages,
         "plan": {},
@@ -663,7 +772,11 @@ def run_agent(messages: List) -> str:
         config={"recursion_limit": 100}
     )
 
-    return result.get("final_output", "") or "抱歉，我没有处理好你的请求喵~"
+    final = result.get("final_output", "") or "抱歉，我没有处理好你的请求喵~"
+    print(f"\n{'█' * 60}")
+    print(f"█  Agent 完成 | 最终输出: {len(final)} 字符")
+    print(f"{'█' * 60}\n")
+    return final
 
 
 def add_skill(name: str, description: str, instructions: str = "", keywords: List[str] = None, category: str = "general"):

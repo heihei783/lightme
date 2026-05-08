@@ -148,7 +148,9 @@ def router_node(state: MainState) -> MainState:
 
     # 两个开关都关 → 直接闲聊
     if not rag_open and not agent_open:
-        print("用户的意图是：chat (开关均关闭)")
+        print("\n" + "=" * 60)
+        print("🧭 [Router] 意图识别 → chat (开关均关闭)")
+        print("=" * 60)
         return {"route": "chat"}
 
     # AI 意图识别（含对话历史）
@@ -160,7 +162,9 @@ def router_node(state: MainState) -> MainState:
     except Exception:
         intent = "rag" if rag_open else "chat"
 
-    print(f"用户的意图是：{intent}")
+    print("\n" + "=" * 60)
+    print(f"🧭 [Router] 意图识别 → {intent}")
+    print("=" * 60)
 
     if intent == "rag" and rag_open:
         docs = rag.search_only(last_msg)
