@@ -299,27 +299,53 @@ MAX_SUBTASK_RETRIES = 3
 
 
 def _safe_truncate_history(messages: List, max_count: int = 5) -> List:
-    """从末尾取最近 N 条消息，但保证不切断 tool_calls / ToolMessage 配对。
+    """从末尾取最近 N 条消息，保证 tool_calls / ToolMessage 完整配对。
 
-    从后往前扫描，如果第一条就是 ToolMessage，则继续往前直到找到对应的
-    AIMessage(tool_calls)，确保 API 不会收到孤立的 tool 消息。
+    处理两种截断破坏:
+      1. 第一条是孤立的 ToolMessage → 向前找回 AIMessage(tool_calls)
+      2. AIMessage(tool_calls) 的某些 ToolMessage 被切掉 → 移除该 AIMessage 组
     """
     if len(messages) <= max_count:
         return messages
 
-    truncated = messages[-max_count:]
-    # 检查截断后第一条是否是孤立的 ToolMessage
-    if hasattr(truncated[0], "tool_call_id") and truncated[0].tool_call_id:
-        # 向前搜索对应的 AIMessage(tool_calls)，若被切断则多取一些
-        start_idx = len(messages) - max_count
-        while start_idx > 0:
-            prev = messages[start_idx - 1]
-            if hasattr(prev, "tool_calls") and prev.tool_calls:
-                start_idx -= 1
-                break
+    start_idx = len(messages) - max_count
+
+    # --- 反向修复: 孤立的 ToolMessage 向前找回 AIMessage(tool_calls) ---
+    while start_idx > 0 and start_idx < len(messages):
+        msg = messages[start_idx]
+        if hasattr(msg, "tool_call_id") and msg.tool_call_id:
             start_idx -= 1
-        truncated = messages[start_idx:]
-    return truncated
+        else:
+            break
+
+    result = messages[start_idx:]
+
+    # --- 正向修复: 移除开头不完整的 AIMessage(tool_calls) 组 ---
+    # 如果开头是 AIMessage(tool_calls)，检查它引用的所有 tool_call_id
+    # 是否都有对应的 ToolMessage 在列表中。没有 → 整组删除。
+    while result:
+        first = result[0]
+        if hasattr(first, "tool_calls") and first.tool_calls:
+            needed_ids = set()
+            for tc in first.tool_calls:
+                tc_id = tc["id"] if isinstance(tc, dict) else tc.id
+                needed_ids.add(tc_id)
+            found_ids = set()
+            for m in result[1:]:
+                if hasattr(m, "tool_call_id") and m.tool_call_id:
+                    found_ids.add(m.tool_call_id)
+                else:
+                    break  # 遇到非 ToolMessage，停止收集
+            if not needed_ids.issubset(found_ids):
+                # 不完整 → 移除该 AIMessage
+                result = result[1:]
+                # 继续移除后续的孤儿 ToolMessages
+                while result and hasattr(result[0], "tool_call_id") and result[0].tool_call_id:
+                    result = result[1:]
+                continue
+        break
+
+    return result
 
 
 # -------------------- 节点3: 执行节点 --------------------
