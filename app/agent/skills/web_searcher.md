@@ -2,6 +2,7 @@
 
 ## Description
 使用 TAVILY 联网搜索引擎查询最新资讯和实时信息。
+只适用于常规信息查寻，不适用于复杂查询。
 
 ## Category
 search

@@ -39,6 +39,7 @@ class SkillDef:
     instructions: str = ""
     notes: str = ""
     source_file: str = ""
+    tool_module: str = ""  # 技能的 Python 工具模块路径，如 "app.agent.skill_code.firecrawl"
 
     def to_dict(self) -> Dict:
         return {
@@ -48,6 +49,9 @@ class SkillDef:
             "category": self.category,
             "instructions": self.instructions,
         }
+
+    def has_tools(self) -> bool:
+        return bool(self.tool_module)
 
 
 # 向后兼容别名
@@ -78,12 +82,13 @@ def parse_skill_md(filepath: str) -> Optional[SkillDef]:
     keywords: List[str] = []
     instructions = ""
     notes = ""
+    tool_module = ""
 
     current_section = None
     section_lines: List[str] = []
 
     def flush_section():
-        nonlocal description, category, instructions, notes
+        nonlocal description, category, instructions, notes, tool_module
         if not current_section or not section_lines:
             return
         body = "\n".join(section_lines).strip()
@@ -101,6 +106,8 @@ def parse_skill_md(filepath: str) -> Optional[SkillDef]:
             instructions = body
         elif sec == "notes":
             notes = body
+        elif sec in ("toolmodule", "tool_module"):
+            tool_module = body.split("\n")[0].strip()
 
     for line in text.split("\n"):
         section_match = re.match(r'^##\s+(.+)$', line)
@@ -121,6 +128,7 @@ def parse_skill_md(filepath: str) -> Optional[SkillDef]:
         instructions=instructions,
         notes=notes,
         source_file=os.path.basename(filepath),
+        tool_module=tool_module,
     )
 
 
@@ -235,3 +243,29 @@ def load_skills_from_directory(skills_dir: str, registry: SkillRegistry) -> int:
     for skill in skills:
         registry.register(skill)
     return len(skills)
+
+
+# ====================================================================
+# 6. 技能工具加载
+# ====================================================================
+
+def get_skill_tools(skill: SkillDef) -> List:
+    """根据 SkillDef 的 tool_module 字段，动态导入对应模块并返回 TOOLS 列表。
+
+    tool_module 示例: "app.agent.skill_code.firecrawl"
+    该模块必须导出 TOOLS (List[BaseTool])。
+    """
+    if not skill.tool_module:
+        return []
+    try:
+        import importlib
+        mod = importlib.import_module(skill.tool_module)
+        if hasattr(mod, "TOOLS"):
+            tools = mod.TOOLS
+            if tools:
+                return list(tools)
+    except ImportError as e:
+        print(f"[SkillLoader] [WARN] 无法导入 {skill.tool_module}: {e}")
+    except Exception as e:
+        print(f"[SkillLoader] [WARN] 加载 {skill.tool_module} 工具出错: {e}")
+    return []

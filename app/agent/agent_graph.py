@@ -19,7 +19,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from app.llm.chat_model import chat_model
 from app.agent.memory import agent_memory
-from app.agent.skill_loader import SkillDef
+from app.agent.skill_loader import SkillDef, get_skill_tools
 from app.agent.skills import skill_registry
 from app.agent.tools import DEFAULT_TOOLS
 from utils.file_handler import txt_loader
@@ -349,16 +349,23 @@ def executor_node(state: AgentState) -> AgentState:
     current_task = subtasks[current_idx - 1]
     task_desc = current_task.get("desc", "")
 
-    # 始终绑定工具——LLM 自行决定是否调用
-    model_with_tools = chat_model.bind_tools(DEFAULT_TOOLS)
+    # 确定当前激活的技能 (排除 general_llm 占位符)
+    active_skills = state.get("active_skills", [])
+    skill_name = active_skills[0] if active_skills and active_skills[0] != "general_llm" else None
+    active_skill = skill_registry.get_by_name(skill_name) if skill_name else None
+
+    # 动态绑定工具: DEFAULT_TOOLS + 当前技能专属工具
+    skill_tools = get_skill_tools(active_skill) if active_skill else []
+    all_tools = list(DEFAULT_TOOLS) + skill_tools
+    if skill_tools:
+        print(f"  技能工具已加载: {[t.name for t in skill_tools]}")
+    model_with_tools = chat_model.bind_tools(all_tools)
 
     memory_ctx = state.get("memory_context", "")
     system_prompt = _get_system_prompt("executor")
 
     # 注入当前选中技能的指令指南
-    active_skills = state.get("active_skills", [])
-    if active_skills and active_skills[0] != "general_llm":
-        skill_name = active_skills[0]
+    if skill_name:
         skill_instructions = skill_registry.get_instructions(skill_name)
         if skill_instructions:
             print(f"  技能指南已注入: {skill_name} ({len(skill_instructions)} 字符)")
@@ -368,16 +375,16 @@ def executor_node(state: AgentState) -> AgentState:
                 f"请严格按照以上技能指南完成当前子任务。"
             )
         else:
-            skill = skill_registry.get_by_name(skill_name)
-            if skill:
+            if active_skill:
                 print(f"  使用技能: {skill_name} (无详细指令)")
                 system_prompt += (
                     f"\n\n=== 当前技能: {skill_name} ===\n"
-                    f"描述: {skill.description}\n"
+                    f"描述: {active_skill.description}\n"
                     f"请使用可用工具完成当前子任务。"
                 )
     else:
-        print(f"  模式: {'通用 LLM' if active_skills and active_skills[0] == 'general_llm' else '无技能'}")
+        mode = "通用 LLM" if (active_skills and active_skills[0] == "general_llm") else "无技能"
+        print(f"  模式: {mode}")
         print(f"  子任务: {task_desc[:80]}")
 
     system_prompt += (
