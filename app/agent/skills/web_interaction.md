@@ -77,3 +77,4 @@ app.agent.skill_code.firecrawl
 - 需要 `FIRECRAWL_API_KEY` 配置在 `config/config_ai.yaml` 中
 - 工具会返回明确的成功或错误信息，信任返回值，无需验证
 - 爬取的文件存放在`E:\OneDrive\Desktop\测试data`的文件夹下
+
