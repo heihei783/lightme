@@ -167,6 +167,12 @@ rag_prompt = create_rag_tempt()
 agent_prompt = create_agent_tempt()
 
 
+def reload_chat_prompt():
+    """重新加载 chat_prompt.txt（人格预设切换后调用）"""
+    global chat_prompt
+    chat_prompt = create_chat_tempt()
+
+
 if __name__ == "__main__":
     docs = create_chat_tempt()
     print(docs)

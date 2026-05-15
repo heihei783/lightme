@@ -22,6 +22,7 @@ dependencies = [
     "pillow>=12.2.0",
     "pyautogui>=0.9.54",
     "pypdf>=6.9.2",
+    "python-multipart>=0.0.28",
     "pywebview>=6.1",
     "pyyaml>=6.0.3",
     "tavily-python>=0.7.24",

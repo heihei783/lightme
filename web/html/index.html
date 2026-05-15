@@ -5,7 +5,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LightMe AI 终端</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🤖</text></svg>">
     <link rel="stylesheet" href="../css/index.css">
+    <script>const API_BASE = 'http://127.0.0.1:8000';</script>
+    <script src="../js/live2d-sdk.js"></script>
+    <script src="../js/LAppDefine.js"></script>
 </head>
 
 <body>
@@ -14,30 +18,49 @@
             <div class="sidebar-header">
                 <button id="new-chat-btn">+ 新建对话</button>
             </div>
-            <div id="session-list" class="session-list">
-            </div>
+            <div id="session-list" class="session-list"></div>
         </div>
 
         <div class="live2d-side" id="live2d-container">
-            <div class="character-placeholder"></div>
+            <canvas id="live2d-canvas"></canvas>
+            <div id="live2d-msg-box" class="live2d-msg-box"></div>
+            <div class="live2d-controls">
+                <button id="l2d-char-btn" title="切换角色">🔄</button>
+                <button id="l2d-voice-btn" title="语音输入">🎤</button>
+            </div>
         </div>
 
         <div class="chat-side">
             <div class="header">
                 <h2 id="current-title">LightMe System</h2>
-                <span class="status-dot"></span>
+                <div class="header-right">
+                    <select id="tts-voice-select" title="切换TTS语音" class="header-select"></select>
+                    <button id="tts-mute-btn" title="关闭语音">🔊</button>
+                    <button id="companion-btn" title="AI 陪伴 - 截图给 AI 看看你的屏幕">陪伴 👀</button>
+                    <button id="config-btn" title="AI 配置" onclick="window.location.href='config_ai.html'">⚙️</button>
+                    <span class="status-dot"></span>
+                </div>
             </div>
 
-            <div id="chat-window">
-            </div>
+            <div id="chat-window"></div>
 
+            <div id="image-preview-row" style="display:none;">
+                <img id="image-preview" src="" alt="预览">
+                <button id="remove-img-btn" title="移除图片">✖</button>
+            </div>
             <div class="input-area">
+                <button id="upload-img-btn" title="上传图片">🖼</button>
+                <input type="file" id="image-input" accept="image/*" style="display:none;">
                 <input type="text" id="user-input" placeholder="输入消息..." autocomplete="off">
                 <button id="send-btn">发送</button>
             </div>
         </div>
     </div>
 
+    <!-- 隐藏的头像上传 input -->
+    <input type="file" id="avatar-file-input" accept="image/*" style="display:none;">
+
+    <script src="../js/live2d-ctrl.js"></script>
     <script src="../js/index.js"></script>
 </body>
 

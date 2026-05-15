@@ -310,49 +310,61 @@ main_graph = main_workflow.compile()
 # 6. 对外接口 —— 保持与 web_py.py 的完全兼容
 # ====================================================================
 
-def chat_loop(session_id: str, question: str):
+def _vision_chat(image_b64: str, question: str, history: list) -> str:
+    """使用视觉模型分析图片并返回文本回复（每次动态读取配置，确保使用最新模型）"""
+    import base64 as b64
+    from openai import OpenAI
+    from utils.config_handler import load_configai_config
+
+    cfg = load_configai_config()
+    api_key = cfg.get("VISION_MODEL_API_KEY")
+    model_name = cfg.get("VISION_MODEL_NAME", "")
+    api_base = cfg.get("VISION_MODEL_URL") or "https://ark.cn-beijing.volces.com/api/v3"
+
+    client = OpenAI(api_key=api_key, base_url=api_base)
+
+    content_parts = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}]
+    if question and question.strip():
+        content_parts.insert(0, {"type": "text", "text": question})
+    else:
+        content_parts.insert(0, {"type": "text", "text": "请描述这张图片的内容"})
+
+    messages = [{"role": "user", "content": content_parts}]
+    response = client.chat.completions.create(model=model_name, messages=messages, stream=False)
+    return response.choices[0].message.content
+
+
+def chat_loop(session_id: str, question: str, image_b64: str | None = None):
     """
     对话主循环 —— 与 web 层接口完全兼容
 
-    流程:
-      1. 从数据库加载该会话的历史记录
-      2. 将新问题追加到消息列表
-      3. 流式执行主图 (router → chat/rag/agent)
-      4. 逐块 yield 响应内容给前端
-      5. 将完整对话存入数据库
-
-    Args:
-      session_id: 会话 ID (用于区分不同对话)
-      question:   用户输入的问题
-
-    Yields:
-      响应文本片段 (流式输出)
+    当 image_b64 不为空时，使用视觉模型分析图片并返回回复。
     """
     try:
-        # 步骤1: 加载历史记录
         history = get_session_history(session_id)
-
-        # 步骤2: 构建输入消息
         input_messages = history + [HumanMessage(content=question)]
 
         full_response = ""
 
-        # 步骤3: 流式执行主图
-        # stream_mode="updates" → 每个节点完成后返回 {节点名: 状态更新}
-        for event in main_graph.stream(
-            {"messages": input_messages},
-            stream_mode="updates",
-            config={"recursion_limit": 150}
-        ):
-            for _node_name, update in event.items():
-                if "messages" in update:
-                    for msg in update["messages"]:
-                        # 只输出有内容的消息
-                        if hasattr(msg, "content") and msg.content:
-                            full_response += msg.content
-                            yield msg.content
+        if image_b64:
+            # 视觉模式：调用视觉模型
+            reply = _vision_chat(image_b64, question, history)
+            full_response = reply
+            yield reply
+        else:
+            # 普通模式：流式执行主图
+            for event in main_graph.stream(
+                {"messages": input_messages},
+                stream_mode="updates",
+                config={"recursion_limit": 150}
+            ):
+                for _node_name, update in event.items():
+                    if "messages" in update:
+                        for msg in update["messages"]:
+                            if hasattr(msg, "content") and msg.content:
+                                full_response += msg.content
+                                yield msg.content
 
-        # 步骤4: 持久化存储
         if full_response:
             print(f"--- 对话结束，存入数据库: {full_response[:20]}... ---")
             add_message(session_id, question, full_response)

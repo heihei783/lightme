@@ -18,7 +18,6 @@ body {
 
 .container {
     width: 95vw;
-    /* 稍微调宽一点以容纳侧边栏 */
     height: 85vh;
     display: flex;
     background: var(--glass-white);
@@ -30,7 +29,7 @@ body {
     overflow: hidden;
 }
 
-/* 🌟 左侧侧边栏样式 */
+/* ==================== 左侧侧边栏 ==================== */
 .sidebar {
     width: 260px;
     background: rgba(255, 255, 255, 0.15);
@@ -41,6 +40,8 @@ body {
 
 .sidebar-header {
     padding: 20px;
+    display: flex;
+    align-items: center;
 }
 
 #new-chat-btn {
@@ -53,10 +54,7 @@ body {
     cursor: pointer;
     transition: 0.3s;
 }
-
-#new-chat-btn:hover {
-    background: rgba(255, 255, 255, 0.4);
-}
+#new-chat-btn:hover { background: rgba(255, 255, 255, 0.4); }
 
 .session-list {
     flex: 1;
@@ -65,6 +63,9 @@ body {
 }
 
 .session-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     padding: 12px 15px;
     margin-bottom: 8px;
     border-radius: 12px;
@@ -76,33 +77,163 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-
-.session-item:hover {
-    background: rgba(255, 255, 255, 0.3);
-}
-
+.session-item:hover { background: rgba(255, 255, 255, 0.3); }
 .session-item.active {
     background: var(--active-blue);
     color: #4285f4;
     font-weight: 500;
 }
 
-/* 中间角色区 */
+/* 删除按钮 */
+.delete-btn {
+    background: none;
+    border: none;
+    color: rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 5px;
+    display: none;
+    transition: color 0.3s;
+}
+.session-item:hover .delete-btn { display: flex; align-items: center; justify-content: center; }
+.delete-btn:hover { color: #ff4d4f; }
+/* 删除中的转圈 */
+.delete-btn.spinning {
+    display: flex;
+    width: 18px; height: 18px;
+    border: 2px solid #ddd;
+    border-top-color: #999;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    padding: 0;
+}
+
+/* ==================== 中间 Live2D 角色区 ==================== */
 .live2d-side {
     flex: 1;
     border-right: 1px solid var(--glass-border);
-    display: flex;
-    align-items: flex-end;
-    justify-content: center;
+    position: relative;
+    overflow: hidden;
     background: rgba(255, 255, 255, 0.05);
 }
 
-/* 右侧聊天区 */
+#live2d-canvas {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    cursor: pointer;
+}
+
+.live2d-msg-box {
+    position: absolute;
+    top: 10%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255,255,255,0.9);
+    border: 2px solid #ffb6c1;
+    border-radius: 16px;
+    padding: 8px 16px;
+    font-size: 14px;
+    color: #ff7675;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    z-index: 10;
+    max-width: 200px;
+    text-align: center;
+}
+.live2d-msg-box.show { opacity: 1; }
+
+.live2d-controls {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    display: flex;
+    gap: 8px;
+    z-index: 10;
+}
+.live2d-controls button {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-white);
+    cursor: pointer;
+    font-size: 16px;
+}
+.live2d-controls .recording {
+    background: #ff7675 !important;
+    animation: stt-pulse 1.5s infinite;
+}
+@keyframes stt-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255,118,117,0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(255,118,117,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,118,117,0); }
+}
+
+/* ==================== 右侧聊天区 ==================== */
 .chat-side {
     flex: 1.8;
     display: flex;
     flex-direction: column;
     padding: 30px;
+}
+
+/* 头部 */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+.header h2 { color: #666; font-size: 18px; margin: 0; }
+.header-right { display: flex; align-items: center; gap: 8px; }
+
+/* 头部小按钮通用样式 */
+.header-select {
+    border: 1px solid var(--glass-border);
+    background: rgba(255,255,255,0.4);
+    border-radius: 12px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: #666;
+    outline: none;
+    cursor: pointer;
+}
+#tts-mute-btn, #config-btn {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-white);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+}
+#tts-mute-btn.muted { background: #ff7675; color: #fff; }
+#companion-btn {
+    background: linear-gradient(135deg, #ff7675, #fdcb6e);
+    color: white;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: bold;
+    transition: 0.3s;
+}
+#companion-btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(255,118,117,0.4);
+}
+.status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #4caf50;
+    flex-shrink: 0;
 }
 
 #chat-window {
@@ -111,33 +242,106 @@ body {
     padding-right: 10px;
     display: flex;
     flex-direction: column;
-    gap: 15px;
+    gap: 10px;
 }
 
-/* 消息气泡保持不变，微调边距 */
+/* ==================== 消息行 (头像 + 气泡) ==================== */
+.msg-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    max-width: 90%;
+}
+.msg-row.user-row {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+}
+.msg-row.ai-row {
+    align-self: flex-start;
+}
+
+.msg-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    object-fit: cover;
+    border: 2px solid rgba(255,255,255,0.5);
+    cursor: pointer;
+    transition: 0.2s;
+}
+.msg-avatar:hover {
+    border-color: var(--sky-blue);
+    box-shadow: 0 0 8px rgba(135,206,235,0.4);
+}
+
+.msg-avatar-placeholder {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    border: 2px solid rgba(255,255,255,0.5);
+    cursor: pointer;
+    transition: 0.2s;
+}
+.msg-avatar-placeholder:hover {
+    border-color: var(--sky-blue);
+    box-shadow: 0 0 8px rgba(135,206,235,0.4);
+}
+
+/* 消息气泡 */
 .message {
     padding: 12px 18px;
     border-radius: 18px;
-    max-width: 85%;
     font-size: 15px;
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
     line-height: 1.5;
+    word-break: break-word;
+}
+.message img {
+    max-width: 200px;
+    border-radius: 12px;
+    margin-bottom: 8px;
+    display: block;
 }
 
 .ai-msg {
     background: rgba(255, 255, 255, 0.6);
     color: #444;
-    align-self: flex-start;
     border-bottom-left-radius: 4px;
 }
 
 .user-msg {
     background: var(--sakura-pink);
     color: white;
-    align-self: flex-end;
     border-bottom-right-radius: 4px;
 }
 
+/* ==================== 加载动画 ==================== */
+.thinking-row .message {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+}
+.thinking-spinner {
+    display: block;
+    width: 22px; height: 22px;
+    border: 3px solid #e0e0e0;
+    border-top-color: #999;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    box-sizing: border-box;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ==================== 输入区 ==================== */
 .input-area {
     margin-top: 20px;
     display: flex;
@@ -163,32 +367,39 @@ button#send-btn {
     font-weight: bold;
 }
 
-/* 🌟 调整原本的 session-item，让内部元素两端对齐 */
-.session-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-/* 🌟 删除按钮的样式 */
-.delete-btn {
-    background: none;
-    border: none;
-    color: rgba(0, 0, 0, 0.3);
+#upload-img-btn {
+    background: var(--glass-white);
+    border: 1px solid var(--glass-border);
+    border-radius: 15px;
+    width: 44px;
     cursor: pointer;
-    font-size: 14px;
-    padding: 0 5px;
-    display: none;
-    /* 默认藏起来喵！ */
-    transition: color 0.3s;
+    font-size: 18px;
+    flex-shrink: 0;
 }
 
-/* 🌟 鼠标悬浮在对话框上时，显示删除按钮 */
-.session-item:hover .delete-btn {
-    display: block;
+#image-preview-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(255,182,197,0.15);
+    border: 1px dashed var(--sakura-pink);
+    border-radius: 12px;
+    margin-bottom: 10px;
 }
-
-/* 🌟 鼠标指在删除按钮上时，变成危险的红色 */
-.delete-btn:hover {
-    color: #ff4d4f;
+#image-preview-row img {
+    max-width: 120px;
+    max-height: 80px;
+    border-radius: 8px;
+}
+#remove-img-btn {
+    background: #ff7675;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
 }

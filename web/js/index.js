@@ -4,58 +4,214 @@ document.addEventListener('DOMContentLoaded', async () => {
     const userInput = document.getElementById('user-input');
     const chatWindow = document.getElementById('chat-window');
     const sessionListContainer = document.getElementById('session-list');
+    const avatarFileInput = document.getElementById('avatar-file-input');
 
-    let currentSessionId = localStorage.getItem('last_session_id') || "";
+    let currentSessionId = localStorage.getItem('last_session_id') || '';
+    let ttsMuted = localStorage.getItem('tts_muted') === 'true';
+    // 当前正在上传的头像类型: 'user' | 'ai'
+    let avatarUploadTarget = 'user';
+    // 陪伴模式
+    let companionTimer = null;
+    let companionInterval = 10; // 默认10秒，后续从配置读取
+    let companionActive = false;
+    let imageGenProbability = 0.08;
 
-    // --- 初始化 ---
+    // ==================== 头像系统 ====================
+    function getUserAvatarUrl() {
+        const filename = localStorage.getItem('avatar_filename');
+        return filename ? API_BASE + '/avatar/' + filename : null;
+    }
+
+    function getAiAvatarUrl() {
+        const filename = localStorage.getItem('ai_avatar_filename');
+        return filename ? API_BASE + '/avatar/' + filename : null;
+    }
+
+    // 点击用户头像 → 上传用户头像
+    function onUserAvatarClick() {
+        avatarUploadTarget = 'user';
+        avatarFileInput.click();
+    }
+
+    // 点击 AI 头像 → 上传 AI 头像
+    function onAiAvatarClick() {
+        avatarUploadTarget = 'ai';
+        avatarFileInput.click();
+    }
+
+    // 头像上传处理
+    avatarFileInput.onchange = async () => {
+        const file = avatarFileInput.files[0];
+        if (!file) return;
+        const formData = new FormData();
+        formData.append('file', file);
+        try {
+            const resp = await fetch(API_BASE + '/avatar/upload', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await resp.json();
+            if (data.status === 'success') {
+                const key = avatarUploadTarget === 'ai' ? 'ai_avatar_filename' : 'avatar_filename';
+                localStorage.setItem(key, data.filename);
+                // 刷新当前聊天窗口中的头像
+                refreshAllAvatars();
+            } else {
+                alert('上传失败: ' + (data.msg || '未知错误'));
+            }
+        } catch (e) {
+            console.error('头像上传失败:', e);
+        }
+        avatarFileInput.value = '';
+    };
+
+    function refreshAllAvatars() {
+        document.querySelectorAll('.msg-avatar-user').forEach(img => {
+            const url = getUserAvatarUrl();
+            if (url) img.src = url;
+        });
+        document.querySelectorAll('.avatar-placeholder-user').forEach(el => {
+            const url = getUserAvatarUrl();
+            if (url) {
+                el.replaceWith(buildUserAvatarImg(url));
+            }
+        });
+        document.querySelectorAll('.msg-avatar-ai').forEach(img => {
+            const url = getAiAvatarUrl();
+            if (url) img.src = url;
+        });
+        document.querySelectorAll('.avatar-placeholder-ai').forEach(el => {
+            const url = getAiAvatarUrl();
+            if (url) {
+                el.replaceWith(buildAiAvatarImg(url));
+            }
+        });
+    }
+
+    // ==================== 初始化 ====================
     async function init() {
         await fetchSessions();
+        await fetchCompanionInterval();
         if (currentSessionId) {
             await switchSession(currentSessionId);
         }
+        if (typeof Live2DCtrl !== 'undefined') {
+            Live2DCtrl.init();
+        }
+        initTTSControls();
     }
     await init();
 
-    // --- 1. 获取会话列表 ---
-    async function fetchSessions() {
+    // ==================== 陪伴间隔配置 ====================
+    async function fetchCompanionInterval() {
         try {
-            const response = await fetch('http://127.0.0.1:8000/sessions');
-            const data = await response.json();
-            let sessions = data.sessions;
-
-            if (!sessions || sessions.length === 0) {
-                sessions = [{ session_id: "", title: "快来开启新对话吧喵~" }];
+            const resp = await fetch(API_BASE + '/config');
+            const data = await resp.json();
+            if (data.status === 'success') {
+                if (data.config.companion_interval) companionInterval = data.config.companion_interval;
+                if (data.config.image_gen_probability != null) imageGenProbability = data.config.image_gen_probability;
             }
-            renderSessionList(sessions);
-        } catch (error) {
-            console.error("加载会话列表失败:", error);
+        } catch (e) { /* 保持默认值 */ }
+    }
+
+    // ==================== TTS 控制 ====================
+    async function initTTSControls() {
+        const voiceSelect = document.getElementById('tts-voice-select');
+        const muteBtn = document.getElementById('tts-mute-btn');
+
+        // 从后端拉取音色列表
+        let voices = [];
+        try {
+            const resp = await fetch(API_BASE + '/tts/voices');
+            const data = await resp.json();
+            if (data.status === 'success') voices = data.voices;
+        } catch (e) {
+            console.error('获取音色列表失败:', e);
+        }
+
+        // 构建分组选项
+        if (voiceSelect) {
+            voiceSelect.innerHTML = '';
+            const edgeGroup = document.createElement('optgroup');
+            edgeGroup.label = '─ EdgeTTS ─';
+            const fishGroup = document.createElement('optgroup');
+            fishGroup.label = '─ FishAudio ─';
+
+            voices.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = JSON.stringify({ voice: v.voice, provider: v.provider });
+                opt.textContent = v.name;
+                if (v.provider === 'fish_audio') {
+                    fishGroup.appendChild(opt);
+                } else {
+                    edgeGroup.appendChild(opt);
+                }
+            });
+            voiceSelect.appendChild(edgeGroup);
+            if (fishGroup.children.length > 0) voiceSelect.appendChild(fishGroup);
+
+            // 恢复上次选择的音色
+            const savedVoice = localStorage.getItem('tts_voice');
+            if (savedVoice) {
+                for (const opt of voiceSelect.options) {
+                    if (opt.value === savedVoice) { voiceSelect.value = savedVoice; break; }
+                }
+            }
+            voiceSelect.onchange = () => {
+                localStorage.setItem('tts_voice', voiceSelect.value);
+            };
+        }
+
+        if (muteBtn) {
+            if (ttsMuted) muteBtn.classList.add('muted');
+            muteBtn.textContent = ttsMuted ? '🔇' : '🔊';
+            muteBtn.onclick = () => {
+                ttsMuted = !ttsMuted;
+                localStorage.setItem('tts_muted', ttsMuted);
+                muteBtn.textContent = ttsMuted ? '🔇' : '🔊';
+                muteBtn.classList.toggle('muted', ttsMuted);
+            };
         }
     }
 
-    // --- 2. 渲染左侧列表与删除按钮 ---
+    function getTTSVoice() {
+        const saved = localStorage.getItem('tts_voice');
+        if (saved) {
+            try { return JSON.parse(saved); } catch (e) { /* fall through */ }
+        }
+        return { voice: 'zh-CN-XiaoyiNeural', provider: 'edge_tts' };
+    }
+
+    // ==================== 会话列表 ====================
+    async function fetchSessions() {
+        try {
+            const response = await fetch(API_BASE + '/sessions');
+            const data = await response.json();
+            let sessions = data.sessions;
+            if (!sessions || sessions.length === 0) {
+                sessions = [{ session_id: '', title: '快来开启新对话吧喵~' }];
+            }
+            renderSessionList(sessions);
+        } catch (error) {
+            console.error('加载会话列表失败:', error);
+        }
+    }
+
     function renderSessionList(sessions) {
         sessionListContainer.innerHTML = '';
         sessions.forEach(session => {
-            // 🌟 强兼容：不管后端传 session_id 还是 id，都能接住
             const sid = session.session_id || session.id;
             const div = document.createElement('div');
-
             div.className = `session-item ${sid === currentSessionId ? 'active' : ''}`;
-
             if (sid) {
-                div.innerHTML = `
-                    <span class="title">${session.title}</span>
-                    <button class="delete-btn" title="删除这个对话喵">✖</button>
-                `;
+                div.innerHTML = `<span class="title">${escHtml(session.title)}</span><button class="delete-btn" title="删除这个对话喵">✖</button>`;
             } else {
-                div.innerHTML = `<span class="title">${session.title}</span>`;
+                div.innerHTML = `<span class="title">${escHtml(session.title)}</span>`;
             }
-
-            // 🌟 点击事件分离：点按钮是删除，点其它区域是切换
             div.onclick = (e) => {
                 if (e.target.classList.contains('delete-btn')) {
-                    e.stopPropagation(); // 阻止事件冒泡，防止触发切换
-                    deleteSession(sid);
+                    e.stopPropagation();
+                    deleteSession(sid, e.target);
                 } else if (sid) {
                     switchSession(sid);
                 }
@@ -64,70 +220,212 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // --- 3. 切换与强制刷新右侧历史 ---
     async function switchSession(sid) {
         if (!sid) return;
-
         currentSessionId = sid;
         localStorage.setItem('last_session_id', sid);
-
-        // 重新渲染列表以更新 CSS 的 active 高亮
         await fetchSessions();
-
-        // 🌟 强行清空聊天窗口并重新加载
         chatWindow.innerHTML = '';
         await loadHistory(sid);
     }
 
-    // --- 4. 彻底删除逻辑 ---
-    async function deleteSession(sid) {
-        if (!confirm("确定要彻底删掉这段回忆喵？不可恢复哦！")) return;
-
+    async function deleteSession(sid, btnEl) {
+        if (!confirm('确定要彻底删掉这段回忆喵？不可恢复哦！')) return;
+        if (btnEl) {
+            btnEl.textContent = '';
+            btnEl.classList.add('spinning');
+        }
         try {
-            const response = await fetch(`http://127.0.0.1:8000/session/${sid}`, {
-                method: 'DELETE'
-            });
+            const response = await fetch(`${API_BASE}/session/${sid}`, { method: 'DELETE' });
             const data = await response.json();
-
-            if (data.status === "success") {
-                // 如果删的是当前正在看的对话，让右侧回到出厂状态
+            if (data.status === 'success') {
                 if (sid === currentSessionId) {
-                    currentSessionId = "";
+                    currentSessionId = '';
                     localStorage.removeItem('last_session_id');
-                    chatWindow.innerHTML = '<div class="message ai-msg">对话已删除，快来开启新对话吧喵~</div>';
+                    chatWindow.innerHTML = buildAiMsgRow('对话已删除，快来开启新对话吧喵~');
                 }
-                await fetchSessions(); // 刷新左侧列表让它消失
+                await fetchSessions();
             }
         } catch (error) {
-            console.error("删除失败喵:", error);
+            console.error('删除失败喵:', error);
         }
     }
 
-    // --- 5. 从后端拉取历史 ---
     async function loadHistory(sid) {
         if (!sid) return;
         try {
-            const response = await fetch(`http://127.0.0.1:8000/history/${sid}`);
+            const response = await fetch(`${API_BASE}/history/${sid}`);
             const data = await response.json();
-            if (data.status === "success") {
-                chatWindow.innerHTML = ''; // 🌟 再次确保清空防重复
-                data.history.forEach(msg => renderMessage(msg.content, msg.role));
+            if (data.status === 'success') {
+                chatWindow.innerHTML = '';
+                data.history.forEach(msg => {
+                    if (msg.role === 'user-msg') {
+                        renderUserMessage(msg.content);
+                    } else {
+                        renderAiMessage(msg.content);
+                    }
+                });
             }
         } catch (error) {
-            console.error("加载历史失败:", error);
+            console.error('加载历史失败:', error);
         }
     }
 
-    // --- 6. 渲染消息气泡 ---
-    function renderMessage(text, className) {
-        const msgDiv = document.createElement('div');
-        msgDiv.className = `message ${className}`;
-        msgDiv.innerText = text;
-        chatWindow.appendChild(msgDiv);
+    // ==================== 头像 HTML 构建 ====================
+    function buildUserAvatarImg(url) {
+        const img = document.createElement('img');
+        img.className = 'msg-avatar msg-avatar-user';
+        img.src = url;
+        img.title = '点击更换头像';
+        img.onclick = onUserAvatarClick;
+        return img;
+    }
+
+    function buildAiAvatarImg(url) {
+        const img = document.createElement('img');
+        img.className = 'msg-avatar msg-avatar-ai';
+        img.src = url;
+        img.title = '点击更换AI头像';
+        img.onclick = onAiAvatarClick;
+        return img;
+    }
+
+    function buildUserAvatarHTML() {
+        const url = getUserAvatarUrl();
+        if (url) {
+            return `<img class="msg-avatar msg-avatar-user" src="${url}" alt="我" title="点击更换头像">`;
+        }
+        return `<div class="msg-avatar-placeholder avatar-placeholder-user" style="background:#ffe0e6;color:#ff7675;" title="点击上传头像">🐱</div>`;
+    }
+
+    function buildAiAvatarHTML() {
+        const url = getAiAvatarUrl();
+        if (url) {
+            return `<img class="msg-avatar msg-avatar-ai" src="${url}" alt="AI" title="点击更换AI头像">`;
+        }
+        return `<div class="msg-avatar-placeholder avatar-placeholder-ai" style="background:#e0f0ff;color:#4285f4;" title="点击上传AI头像">🤖</div>`;
+    }
+
+    // 给已渲染的 avatar 元素绑定点击事件
+    function bindAvatarClicks(row) {
+        const userAvatar = row.querySelector('.msg-avatar-user, .avatar-placeholder-user');
+        if (userAvatar) userAvatar.onclick = onUserAvatarClick;
+        const aiAvatar = row.querySelector('.msg-avatar-ai, .avatar-placeholder-ai');
+        if (aiAvatar) aiAvatar.onclick = onAiAvatarClick;
+    }
+
+    // ==================== 消息渲染 ====================
+    function buildUserMsgRow(text, imageB64) {
+        const div = document.createElement('div');
+        div.className = 'msg-row user-row';
+        let inner = buildUserAvatarHTML();
+        inner += `<div class="message user-msg">`;
+        if (imageB64) {
+            inner += `<img src="data:image/jpeg;base64,${imageB64}" alt="上传图片">`;
+        }
+        inner += `${escHtml(text)}</div>`;
+        div.innerHTML = inner;
+        bindAvatarClicks(div);
+        return div;
+    }
+
+    function buildAiMsgRow(text) {
+        const div = document.createElement('div');
+        div.className = 'msg-row ai-row';
+        div.innerHTML = buildAiAvatarHTML() + `<div class="message ai-msg">${escHtml(text)}</div>`;
+        bindAvatarClicks(div);
+        return div;
+    }
+
+    function renderUserMessage(text, imageB64) {
+        const row = buildUserMsgRow(text, imageB64);
+        chatWindow.appendChild(row);
         chatWindow.scrollTop = chatWindow.scrollHeight;
     }
 
-    // --- 7. 发送消息 ---
+    function renderAiMessage(text) {
+        const row = buildAiMsgRow(text);
+        chatWindow.appendChild(row);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    // 思考中气泡 — 带"正在思考"文字 + 跳动的点
+    function buildThinkingRow() {
+        const div = document.createElement('div');
+        div.className = 'msg-row ai-row thinking-row';
+        div.id = 'thinking-row';
+        div.innerHTML = buildAiAvatarHTML() +
+            `<div class="message ai-msg" style="display:flex;align-items:center;justify-content:center;min-height:28px;">
+                <div class="thinking-spinner"></div>
+            </div>`;
+        bindAvatarClicks(div);
+        return div;
+    }
+
+    function showThinking() {
+        const row = buildThinkingRow();
+        chatWindow.appendChild(row);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    // 将思考行原地转为正式消息气泡（保留 spinner 继续转），返回气泡 DOM
+    // 调用方拿到第一块文本后自行替换内容
+    function claimThinkingRow() {
+        const row = document.getElementById('thinking-row');
+        if (!row) return null;
+        row.id = '';
+        row.classList.remove('thinking-row');
+        return row.querySelector('.message');
+    }
+
+    function hideThinking() {
+        const row = document.getElementById('thinking-row');
+        if (row) row.remove();
+    }
+
+    // ==================== 图片上传 ====================
+    let selectedImageB64 = null;
+    const uploadImgBtn = document.getElementById('upload-img-btn');
+    const imageInput = document.getElementById('image-input');
+    const imagePreviewRow = document.getElementById('image-preview-row');
+    const imagePreview = document.getElementById('image-preview');
+    const removeImgBtn = document.getElementById('remove-img-btn');
+
+    uploadImgBtn.onclick = () => imageInput.click();
+
+    imageInput.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (file.size > 10 * 1024 * 1024) { alert('图片太大，请小于10MB'); return; }
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let w = img.width, h = img.height;
+                const max = 1024;
+                if (w > max || h > max) {
+                    if (w > h) { h *= max / w; w = max; }
+                    else { w *= max / h; h = max; }
+                }
+                canvas.width = w; canvas.height = h;
+                canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+                selectedImageB64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+                imagePreview.src = URL.createObjectURL(file);
+                imagePreviewRow.style.display = 'flex';
+            };
+            img.src = ev.target.result;
+        };
+        reader.readAsDataURL(file);
+    };
+
+    removeImgBtn.onclick = () => {
+        selectedImageB64 = null;
+        imagePreviewRow.style.display = 'none';
+        imageInput.value = '';
+    };
+
+    // ==================== 发送消息 ====================
     sendBtn.onclick = sendMessage;
     userInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendMessage();
@@ -135,53 +433,255 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function sendMessage() {
         const text = userInput.value.trim();
-        if (!text) return;
+        const hasImage = !!selectedImageB64;
+        if (!text && !hasImage) return;
 
-        renderMessage(text, 'user-msg');
+        if (hasImage) {
+            renderUserMessage(text || '看看这张图片', selectedImageB64);
+        } else {
+            renderUserMessage(text);
+        }
         userInput.value = '';
+        const imgToSend = selectedImageB64;
+        selectedImageB64 = null;
+        imagePreviewRow.style.display = 'none';
 
-        const aiMsgDiv = document.createElement('div');
-        aiMsgDiv.className = 'message ai-msg';
-        aiMsgDiv.innerText = '思考中喵...';
-        chatWindow.appendChild(aiMsgDiv);
-        chatWindow.scrollTop = chatWindow.scrollHeight;
+        showThinking();
 
         try {
-            const response = await fetch('http://127.0.0.1:8000/chat', {
+            const response = await fetch(API_BASE + '/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: currentSessionId || "new", message: text })
+                body: JSON.stringify({
+                    session_id: currentSessionId || 'new',
+                    message: text || '请描述这张图片',
+                    image: imgToSend || undefined
+                })
             });
 
-            // 如果是新对话，抓取后端传来的新 ID
             const newSid = response.headers.get('X-Session-Id');
             if (newSid && newSid !== currentSessionId) {
                 currentSessionId = newSid;
                 localStorage.setItem('last_session_id', newSid);
-                fetchSessions(); // 刷新左侧，显示新标题
+                fetchSessions();
+            }
+
+            // 认领思考行（spinner 继续转，直到第一块文本到达才被替换）
+            let aiBubble = claimThinkingRow();
+            if (!aiBubble) {
+                hideThinking();
+                const aiRow = document.createElement('div');
+                aiRow.className = 'msg-row ai-row';
+                aiRow.innerHTML = buildAiAvatarHTML() + '<div class="message ai-msg"></div>';
+                bindAvatarClicks(aiRow);
+                chatWindow.appendChild(aiRow);
+                aiBubble = aiRow.querySelector('.message');
             }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
-            aiMsgDiv.innerText = '';
+            let fullText = '';
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                aiMsgDiv.innerText += decoder.decode(value);
+                fullText += decoder.decode(value);
+                aiBubble.textContent = fullText;
                 chatWindow.scrollTop = chatWindow.scrollHeight;
             }
+
+            if (!fullText) {
+                aiBubble.textContent = '呜呜，断线了喵...';
+            }
+
+            if (fullText && !ttsMuted && typeof Live2DCtrl !== 'undefined') {
+                speakText(fullText);
+            }
+
+            // 8% 概率触发生图
+            if (Math.random() < imageGenProbability && text) {
+                try {
+                    const imgResp = await fetch(API_BASE + '/image-gen', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ prompt: text.slice(0, 300) })
+                    });
+                    const imgData = await imgResp.json();
+                    if (imgData.status === 'success' && imgData.image) {
+                        renderGeneratedImage(imgData.image, text.slice(0, 50));
+                    }
+                } catch (e) { /* 静默失败 */ }
+            }
+
         } catch (error) {
-            aiMsgDiv.innerText = '呜呜，断线了喵...';
+            hideThinking();
+            renderAiMessage('呜呜，断线了喵...');
         }
     }
 
-    // --- 8. 新建对话按钮 ---
+    function renderGeneratedImage(base64data, caption) {
+        const row = document.createElement('div');
+        row.className = 'msg-row ai-row';
+        const img = document.createElement('img');
+        img.src = 'data:image/png;base64,' + base64data;
+        img.style.cssText = 'max-width:200px;border-radius:12px;display:block;';
+        const cap = document.createElement('span');
+        cap.style.cssText = 'font-size:11px;color:#999;margin-top:4px;display:block;';
+        cap.textContent = '🎨 ' + (caption || 'AI 生成');
+        const bubble = document.createElement('div');
+        bubble.className = 'message ai-msg';
+        bubble.appendChild(img);
+        bubble.appendChild(cap);
+        row.innerHTML = buildAiAvatarHTML();
+        row.appendChild(bubble);
+        bindAvatarClicks(row);
+        chatWindow.appendChild(row);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    // ==================== TTS 语音合成 ====================
+    async function speakText(text) {
+        try {
+            const v = getTTSVoice();
+            const resp = await fetch(API_BASE + '/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: text.slice(0, 200), voice: v.voice, provider: v.provider })
+            });
+            const data = await resp.json();
+            if (data.status === 'success' && data.audio && typeof Live2DCtrl !== 'undefined') {
+                Live2DCtrl.playVoiceWithLipSync(data.audio);
+                Live2DCtrl.showMsg(text.slice(0, 100));
+            }
+        } catch (e) {
+            console.error('TTS 失败:', e);
+        }
+    }
+
+    // ==================== 陪伴按钮 ====================
+    const companionBtn = document.getElementById('companion-btn');
+
+    // 截屏 → 压缩 → 发给 AI，复用的核心函数
+    async function captureAndSend(track) {
+        const imageCapture = new ImageCapture(track);
+        const bitmap = await imageCapture.grabFrame();
+
+        const canvas = document.createElement('canvas');
+        let w = bitmap.width, h = bitmap.height;
+        const max = 1024;
+        if (w > max || h > max) {
+            if (w > h) { h *= max / w; w = max; }
+            else { w *= max / h; h = max; }
+        }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+        const imageB64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+
+        showThinking();
+
+        const response = await fetch(API_BASE + '/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: currentSessionId || 'new',
+                message: '你是一只陪伴主人的猫娘。主人正在看着屏幕。请描述你看到了什么内容，并用可爱关心的语气与主人互动。如果看到代码或文字，可以给出建议或鼓励。',
+                image: imageB64
+            })
+        });
+
+        let aiBubble = claimThinkingRow();
+        if (!aiBubble) {
+            hideThinking();
+            const aiRow = document.createElement('div');
+            aiRow.className = 'msg-row ai-row';
+            aiRow.innerHTML = buildAiAvatarHTML() + '<div class="message ai-msg"></div>';
+            bindAvatarClicks(aiRow);
+            chatWindow.appendChild(aiRow);
+            aiBubble = aiRow.querySelector('.message');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            fullText += decoder.decode(value);
+            aiBubble.textContent = fullText;
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        if (fullText && !ttsMuted && typeof Live2DCtrl !== 'undefined') {
+            speakText(fullText);
+        }
+    }
+
+    async function startCompanion() {
+        try {
+            const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+            const track = stream.getVideoTracks()[0];
+
+            companionActive = true;
+            companionBtn.textContent = '陪伴中 ⏸';
+            companionBtn.style.background = '#ff7675';
+            renderAiMessage(`陪伴模式已开启，每 ${companionInterval} 秒自动截屏分析喵~`);
+
+            // 首次立即截屏
+            await captureAndSend(track);
+
+            // 定时循环
+            companionTimer = setInterval(async () => {
+                if (track.readyState === 'ended') {
+                    stopCompanion();
+                    return;
+                }
+                try {
+                    await captureAndSend(track);
+                } catch (e) {
+                    console.error('陪伴截屏失败:', e);
+                }
+            }, companionInterval * 1000);
+
+            // 用户关闭共享时自动停止
+            track.addEventListener('ended', () => stopCompanion());
+        } catch (e) {
+            console.error('屏幕捕获失败:', e);
+            hideThinking();
+            renderAiMessage('陪伴模式需要屏幕捕获权限喵~请在浏览器弹窗中允许。');
+        }
+    }
+
+    function stopCompanion() {
+        companionActive = false;
+        if (companionTimer) { clearInterval(companionTimer); companionTimer = null; }
+        companionBtn.textContent = '陪伴 👀';
+        companionBtn.style.background = '';
+        if (!document.getElementById('thinking-row')) {
+            renderAiMessage('陪伴模式已结束喵~');
+        }
+    }
+
+    companionBtn.onclick = () => {
+        if (companionActive) {
+            stopCompanion();
+        } else {
+            startCompanion();
+        }
+    };
+
+    // ==================== 新建对话 ====================
     newChatBtn.onclick = () => {
-        currentSessionId = "";
+        currentSessionId = '';
         localStorage.removeItem('last_session_id');
         chatWindow.innerHTML = '';
-        fetchSessions(); // 刷新以清除左侧高亮
-        renderMessage('新对话已开启，请发送消息喵！', 'ai-msg');
+        fetchSessions();
+        renderAiMessage('新对话已开启，请发送消息喵！');
     };
+
+    // ==================== 工具函数 ====================
+    function escHtml(s) {
+        const div = document.createElement('div');
+        div.textContent = s || '';
+        return div.innerHTML;
+    }
 });
