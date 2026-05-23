@@ -225,11 +225,13 @@ class SkillRegistry:
             return keyword_matches[0] if keyword_matches else None
 
     def match(self, task_desc: str, use_llm: bool = True) -> Optional[SkillDef]:
-        keyword_matches = self.match_by_keywords(task_desc)
-        if keyword_matches and len(task_desc) < 50:
-            return keyword_matches[0]
+        """根据任务描述匹配最合适的技能。优先使用 LLM 语义理解，失败时回退关键词。"""
         if use_llm:
-            return self.match_by_llm(task_desc)
+            result = self.match_by_llm(task_desc)
+            if result:
+                return result
+        # LLM 失败或无结果 → 回退到关键词匹配
+        keyword_matches = self.match_by_keywords(task_desc)
         return keyword_matches[0] if keyword_matches else None
 
 

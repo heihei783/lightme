@@ -1,2 +1,128 @@
-一款正在开发的智能agent，能独立完成用户所布置的任务。并且能够提供情感支撑，陪伴。项目名lightme是因为这个项目是我所开发的第一个完整的，较大的项目吧，嘿嘿~
-目前包含知识检索功能，上网搜索功能。
+# LightMe
+
+一款基于 LLM Agent 的智能桌面伴侣，能够独立完成任务拆解、自主执行，同时提供情感陪伴。
+
+## 功能概览
+
+### 核心能力
+
+- **智能任务规划** — 将复杂任务自动拆解为子任务序列，逐步执行并带重试机制
+- **自主 Agent 调度** — 基于 LangGraph 的状态图引擎，支持规划→执行→反思→汇总的完整 Agent 循环
+- **多 Agent 协作** — 协调者、研究员、执行者、评审者四角色分工，协同完成复杂任务
+- **插件化技能系统** — Markdown 定义技能，无需修改代码即可扩展 Agent 能力
+
+### 已集成技能
+
+| 技能 | 说明 |
+|------|------|
+| web_searcher | Tavily 搜索引擎集成 |
+| web_interaction | Firecrawl 网页抓取 / 爬取 / 结构化提取 |
+| midscene_interaction | Midscene.js AI 视觉驱动的浏览器自动化 |
+| python_executor | 隔离环境 Python 代码执行 |
+| shell_executor | 系统命令执行（30s 超时） |
+| file_reader / file_writer | 文件读写 |
+
+### 其他功能
+
+- **RAG 知识库问答** — 父子文档检索 + 查询转换 + 查询路由，支持 PDF/TXT/MD/DOCX
+- **Agent 记忆系统** — 短期 / 长期 / 情景 / 工作记忆，基于 SQLite 持久化
+- **GUI Agent** — Midscene.js 视觉浏览器操控 + Firecrawl 网页交互
+- **AI 图片生成** — Stable Diffusion / Seedream（火山引擎）
+- **TTS 语音合成** — EdgeTTS + FishAudio 多音色，支持口型同步
+- **Live2D 角色** — 5 个可动角色，多种服装切换
+- **陪伴模式** — 定期截屏 + 视觉模型分析，实时陪伴互动
+- **人格预设** — 猫娘 / 专业助手 / 知心朋友 / 幽默伙伴，可切换
+
+## 技术栈
+
+| 层次 | 技术选型 |
+|------|----------|
+| LLM 调用 | LangChain + LiteLLM（DeepSeek V4 Flash，支持一键切换） |
+| Agent 框架 | LangGraph |
+| 向量数据库 | Chroma |
+| 文档解析 | PyPDF + Unstructured + docx2txt |
+| Web 后端 | FastAPI |
+| Web 前端 | 原生 HTML/CSS/JS + Live2D Cubism SDK |
+| 桌面 GUI | pywebview |
+| 浏览器自动化 | Midscene.js + Playwright |
+| 持久化 | SQLite |
+
+## 快速开始
+
+```bash
+# 安装依赖
+uv sync
+
+# 启动 Web 服务（浏览器访问 http://127.0.0.1:8000/web/html/index.html）
+uv run python -m web.web_py
+
+# 或启动桌面 GUI
+uv run python -m gui.ui
+```
+
+## 项目结构
+
+```
+lightme/
+├── app/
+│   ├── agent/             # Agent 子系统
+│   │   ├── agent_graph.py   # Agent 状态图（规划/执行/反思/汇总）
+│   │   ├── memory.py        # 记忆系统
+│   │   ├── tools.py         # 基础工具集
+│   │   ├── skill_loader.py  # 技能注册与加载
+│   │   ├── skills/          # 技能定义（Markdown）
+│   │   └── skill_code/      # 技能实现（Python/Node.js）
+│   └── llm/               # LLM 模块
+│       ├── llm_chain.py     # 主路由图（chat/rag/agent）
+│       ├── chat_model.py    # LLM 模型初始化
+│       ├── embed_model.py   # 嵌入模型
+│       ├── image_gen.py     # 图片生成
+│       ├── tts.py           # 语音合成
+│       └── prompts/         # 系统提示模板
+├── web/                   # Web 前端 + FastAPI 后端
+│   ├── web_py.py            # API 端点
+│   ├── html/                # 页面
+│   ├── js/                  # 前端逻辑
+│   ├── css/                 # 样式
+│   └── model/               # Live2D 模型资源
+├── gui/                   # 桌面 GUI 启动器
+├── utils/                 # 工具模块
+│   ├── rag_handler.py       # RAG 流水线
+│   ├── db_handler.py        # 数据库
+│   └── file_handler.py      # 文件处理
+├── config/                # 配置文件（YAML/JSON）
+├── data/                  # 运行时数据（数据库/向量库/上传文件）
+└── pyproject.toml
+```
+
+## 配置
+
+所有配置在 `config/` 目录下通过 YAML/JSON 文件管理，支持通过 Web UI 在线修改：
+
+- `config/config_ai.yaml` — LLM / Embedding / Vision / Image 模型配置（不进入版本控制）
+- `config/config_ai_example.yaml` — 配置文件模板
+- `config/personality_presets.json` — 人格预设定义
+- `config/live2d_config.json` — Live2D 角色配置
+
+API Key 等敏感信息通过配置文件管理，不硬编码在代码中。首次使用时请参考 `config_ai_example.yaml` 创建 `config_ai.yaml`。
+
+## 红岩网校考核任务对应
+
+本项目作为红岩网校 Agent 方向的统一实践项目，覆盖以下考核任务：
+
+| 任务 | 本项目对应实现 |
+|------|---------------|
+| 2. Master Stacks | LangGraph（Agent 框架）+ LiteLLM（API 网关）+ Chroma（向量数据库）+ Unstructured（文档解析） |
+| 3. Further RAG | Agentic RAG + 查询路由 + 查询转换 + 层次索引 + 多 Agent 检索 |
+| 4. Autonomous Agents | 任务规划 + 文件读写 + 命令执行 + 沙箱隔离 + 审批机制 |
+| 5. Agent Skills | Markdown 技能定义 + SkillsRegistry + 多技能协同 |
+| 6. Agent Memory | 短期/长期/情景/工作记忆 + SQLite 持久化 |
+| 7. GUI Agents | Midscene.js 浏览器自动化 + Firecrawl 网页交互 |
+| 8. Multi-Agent System | 协调者/研究员/执行者/评审者四角色协作 |
+
+## 开发要求
+
+- Python >= 3.12，使用 `uv` 进行依赖管理
+- 配置信息通过文件管理，不硬编码
+- 提供 Web UI 和桌面 GUI 两种用户界面
+- 使用 Git 进行版本控制

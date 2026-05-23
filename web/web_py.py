@@ -409,6 +409,50 @@ async def switch_prompt_preset(body: dict):
     return {"status": "success", "msg": f"已切换到人格: {name}"}
 
 
+# ============================= 工具 & 技能列表 =============================
+
+@app.get("/tools-and-skills")
+async def get_tools_and_skills():
+    """返回当前所有可用工具和注册技能的列表，供前端展示"""
+    from app.agent.tools import DEFAULT_TOOLS
+    from app.agent.skills import skill_registry
+    from app.agent.skill_loader import get_skill_tools
+
+    # 基础工具
+    base_tools = []
+    for t in DEFAULT_TOOLS:
+        desc = (t.description or "").split("\n")[0].strip()
+        base_tools.append({"name": t.name, "description": desc})
+
+    # 技能列表 + 每个技能附带自己的工具
+    skills_data = []
+    all_skill_tools = []
+    for s in skill_registry.list_all():
+        skill = skill_registry.get_by_name(s["name"])
+        skill_tools = []
+        if skill and skill.has_tools():
+            for st in get_skill_tools(skill):
+                desc = (st.description or "").split("\n")[0].strip()
+                skill_tools.append({"name": st.name, "description": desc})
+                all_skill_tools.append({"name": st.name, "description": desc, "skill": s["name"]})
+
+        skills_data.append({
+            "name": s["name"],
+            "description": s.get("description", ""),
+            "category": s.get("category", "general"),
+            "keywords": s.get("keywords", []),
+            "tools": skill_tools,
+        })
+
+    return {
+        "status": "success",
+        "base_tools": base_tools,
+        "skills": skills_data,
+        "total_tools": len(base_tools) + len(all_skill_tools),
+        "total_skills": len(skills_data),
+    }
+
+
 # ============================= 启动入口 =============================
 
 if __name__ == "__main__":

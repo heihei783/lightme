@@ -301,9 +301,10 @@ MAX_SUBTASK_RETRIES = 3
 def _safe_truncate_history(messages: List, max_count: int = 5) -> List:
     """从末尾取最近 N 条消息，保证 tool_calls / ToolMessage 完整配对。
 
-    处理两种截断破坏:
+    处理三种截断破坏:
       1. 第一条是孤立的 ToolMessage → 向前找回 AIMessage(tool_calls)
-      2. AIMessage(tool_calls) 的某些 ToolMessage 被切掉 → 移除该 AIMessage 组
+      2. 开头有不完整的 AIMessage(tool_calls) → 移除该 AIMessage + 孤儿 ToolMessages
+      3. 尾部有孤立的 AIMessage(tool_calls) → 移除（最后一个有 tool_calls 但无 ToolMessage）
     """
     if len(messages) <= max_count:
         return messages
@@ -320,9 +321,7 @@ def _safe_truncate_history(messages: List, max_count: int = 5) -> List:
 
     result = messages[start_idx:]
 
-    # --- 正向修复: 移除开头不完整的 AIMessage(tool_calls) 组 ---
-    # 如果开头是 AIMessage(tool_calls)，检查它引用的所有 tool_call_id
-    # 是否都有对应的 ToolMessage 在列表中。没有 → 整组删除。
+    # --- 正向修复: 删除头部不完整的 AIMessage(tool_calls) 组 ---
     while result:
         first = result[0]
         if hasattr(first, "tool_calls") and first.tool_calls:
@@ -335,15 +334,41 @@ def _safe_truncate_history(messages: List, max_count: int = 5) -> List:
                 if hasattr(m, "tool_call_id") and m.tool_call_id:
                     found_ids.add(m.tool_call_id)
                 else:
-                    break  # 遇到非 ToolMessage，停止收集
+                    break
             if not needed_ids.issubset(found_ids):
-                # 不完整 → 移除该 AIMessage
                 result = result[1:]
-                # 继续移除后续的孤儿 ToolMessages
                 while result and hasattr(result[0], "tool_call_id") and result[0].tool_call_id:
                     result = result[1:]
                 continue
         break
+
+    # --- 尾部修复: 删除末尾孤立的 AIMessage(tool_calls) ---
+    # 扫描所有 AIMessage(tool_calls)，确保其后都有对应 ToolMessage。
+    # 从后往前扫描，删除孤立的 tool_calls 组。
+    i = len(result) - 1
+    while i >= 0:
+        msg = result[i]
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            # 收集这个 AIMessage 的所有 tool_call_id
+            needed_ids = set()
+            for tc in msg.tool_calls:
+                tc_id = tc["id"] if isinstance(tc, dict) else tc.id
+                needed_ids.add(tc_id)
+            # 在它之后查找匹配的 ToolMessage
+            found_ids = set()
+            for j in range(i + 1, len(result)):
+                m = result[j]
+                if hasattr(m, "tool_call_id") and m.tool_call_id:
+                    found_ids.add(m.tool_call_id)
+                else:
+                    break  # 被非 ToolMessage 打断
+            if not needed_ids.issubset(found_ids):
+                # 不完整 → 删除这个 AIMessage + 它的孤儿 ToolMessages
+                del result[i]
+                while i < len(result) and hasattr(result[i], "tool_call_id") and result[i].tool_call_id:
+                    del result[i]
+                continue
+        i -= 1
 
     return result
 
@@ -408,6 +433,21 @@ def executor_node(state: AgentState) -> AgentState:
                     f"描述: {active_skill.description}\n"
                     f"请使用可用工具完成当前子任务。"
                 )
+        # Midscene 特殊提醒：每次 midscene_act 都是新浏览器，多步必须用 midscene_flow
+        if skill_name == "midscene_interaction":
+            system_prompt += (
+                f"\n\n=== ⚠️ 关键提醒 ===\n"
+                f"midscene_act 每次调用都会启动全新浏览器并在执行后关闭。\n"
+                f"因此，如果你需要在一个网页上执行多个操作（如打开网站→输入搜索→点击按钮→查看结果），\n"
+                f"绝对不能分多次调用 midscene_act！请使用 midscene_flow，将所有操作打包成 flow_json：\n"
+                f'{{"actions":['
+                f'{{"action":"navigate","url":"https://..."}},'
+                f'{{"action":"type","locate":"搜索框","input":"关键词"}},'
+                f'{{"action":"click","instruction":"点击搜索按钮"}},'
+                f'{{"action":"wait","instruction":"3000"}},'
+                f'{{"action":"query","instruction":"列出结果"}}'
+                f']}}\n'
+            )
     else:
         mode = "通用 LLM" if (active_skills and active_skills[0] == "general_llm") else "无技能"
         print(f"  模式: {mode}")
@@ -437,11 +477,26 @@ def executor_node(state: AgentState) -> AgentState:
 
     agent_memory.set_working(f"subtask_{current_idx}_result", response.content)
 
-    return {"messages": [response], "tool_iterations": tool_iterations + 1}
+    return {
+        "messages": [response],
+        "tool_iterations": tool_iterations + 1,
+        "_active_skill_tools": skill_tools,
+    }
 
 
-# -------------------- 节点4: 工具执行节点 --------------------
-tool_executor_node = ToolNode(DEFAULT_TOOLS)
+# 收集所有技能专属工具，合并到 DEFAULT_TOOLS 中
+# ToolNode 需要预先知道所有工具，动态注册会有 config 传递问题
+_ALL_SKILL_TOOLS = []
+for s in skill_registry.list_all():
+    skill = skill_registry.get_by_name(s["name"])
+    if skill and skill.has_tools():
+        st = get_skill_tools(skill)
+        if st:
+            _ALL_SKILL_TOOLS.extend(st)
+            print(f"  [Tools] 技能 '{s['name']}' 已注册 {len(st)} 个工具: {[t.name for t in st]}")
+
+ALL_TOOLS = list(DEFAULT_TOOLS) + _ALL_SKILL_TOOLS
+tool_executor_node = ToolNode(ALL_TOOLS)
 
 
 # -------------------- 节点5: 反思节点 --------------------

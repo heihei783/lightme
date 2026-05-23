@@ -9,6 +9,7 @@ dependencies = [
     "edge-tts>=7.2.8",
     "fastapi>=0.135.2",
     "firecrawl>=4.25.2",
+    "fpdf2>=2.8.7",
     "langchain>=1.2.15",
     "langchain-chroma>=1.1.0",
     "langchain-community>=0.4.1",
@@ -26,6 +27,5 @@ dependencies = [
     "pywebview>=6.1",
     "pyyaml>=6.0.3",
     "tavily-python>=0.7.24",
-    "ui-tars>=0.5.1",
     "unstructured>=0.21.5",
 ]

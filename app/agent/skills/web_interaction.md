@@ -1,7 +1,7 @@
 # Skill: web_interaction
 
 ## Description
-使用 Firecrawl 进行深度网页交互：搜索、抓取完整网页内容、批量爬取、URL 发现和结构化数据提取。相较于 TAVILY 的简单搜索，Firecrawl 能获取网页的完整 Markdown 内容，适合需要阅读、分析、整理网页信息的场景。
+使用 Firecrawl 深度抓取和提取网页内容。能在已知 URL 的情况下获取完整的 Markdown 内容、批量爬取站点、提取结构化 JSON 数据。适合"阅读网页"而非"操控网页"。
 
 ## Category
 search
@@ -9,72 +9,59 @@ search
 ## Trigger
 - 抓取
 - 爬取
-- 网页
 - 网页内容
 - 提取数据
 - 爬虫
-- 网页搜索
 - 网站地图
+- 读取网页
+- 网页全文
 - scrape
 - crawl
 - extract
-- web content
 - firecrawl
+- 批量获取
 
 ## ToolModule
 app.agent.skill_code.firecrawl
 
 ## Instructions
-你是 Firecrawl 网页交互专家。根据任务类型选择正确的工具：
+你是 Firecrawl 网页内容提取专家。你擅长获取已知 URL 的完整内容，而非操控浏览器。
+
+### 适用场景
+- "帮我把这篇文章的完整内容提取出来"（已知 URL）
+- "爬取这个文档站的所有页面"
+- "从这个商品列表页提取所有商品名称和价格"
+- "看看这个网站有哪些页面"
+
+### 不适用场景
+- 需要操控浏览器（点击、输入、登录）→ 用 midscene_interaction
+- 只是查信息不知道 URL → 先用 web_searcher 搜索找 URL
 
 ### 工具选择指南
 
 | 场景 | 工具 | 说明 |
 |------|------|------|
-| 搜索网页，找相关信息 | `firecrawl_search` | 按关键词搜索，返回标题+URL+摘要 |
-| 已知 URL，要读网页内容 | `firecrawl_scrape` | 抓取单个页面完整 Markdown |
-| 需要大量页面内容 | `firecrawl_crawl` | 从入口 URL 开始批量爬取 |
-| 想了解网站有哪些页面 | `firecrawl_map` | 发现站点所有链接 |
-| 从网页提取结构化数据 | `firecrawl_extract` | 按描述提取 JSON 格式数据 |
+| 已知 URL，要读内容 | `firecrawl_scrape` | 抓取单页完整 Markdown |
+| 需要多页面 | `firecrawl_crawl` | 从入口 URL 批量爬取 |
+| 想了解网站有哪些页面 | `firecrawl_map` | 发现站点 URL 结构 |
+| 从网页提取结构化数据 | `firecrawl_extract` | JSON 格式输出 |
+| 搜索找目标页面 | `firecrawl_search` | 先搜索再抓取 |
 
-### 工具详解
+### 与其他技能的区别
+| 需求 | 用哪个 |
+|------|--------|
+| 想知道XXX（查信息，无 URL） | web_searcher (TAVILY) |
+| 想读这个网页的完整内容 | **web_interaction** ← 本技能 |
+| 想操作网页（点击/输入/登录） | midscene_interaction |
 
-#### firecrawl_search (query: str, limit: int = 5)
-搜索网络，返回网页标题、URL 和内容摘要。适用于发现信息源、初步查找。
-- `limit` 默认 5，最大 10
-
-#### firecrawl_scrape (url: str, only_main_content: bool = True)
-抓取单个网页的完整 Markdown 内容（标题+正文）。适用于阅读文章、提取页面详情。
-- `only_main_content=True` 自动过滤广告和导航栏
-- 返回最长 5000 字符
-
-#### firecrawl_crawl (url: str, limit: int = 10, prompt: str = "")
-从起始 URL 爬取整个网站，获取多页面内容。适用于文档收集、批量抓取。
-- `prompt` 可选过滤："只获取API文档"、"只获取博客文章"
-- 每个页面最多返回 1500 字符
-
-#### firecrawl_map (url: str, search: str = "", limit: int = 50)
-发现网站 URL 结构。适用于了解网站布局、找到特定页面。
-
-#### firecrawl_extract (urls: str, prompt: str, json_schema: str = "")
-从网页提取结构化数据（JSON）。适用于商品信息、价格对比等。
-- `urls`: 逗号分隔的多个 URL
-- `prompt`: 用自然语言描述要提取什么
-- `json_schema`: 可选 JSON schema 约束输出结构
-
-### 与 web_search (TAVILY) 的区别
-- **web_search**: 轻量级搜索，返回摘要片段，适合快速查信息
-- **Firecrawl**: 获取完整网页内容，适合需要深度阅读、分析、提取数据的场景
-
-### 工作流程
-1. 需求不明 → 先用 `firecrawl_search` 找目标页面
-2. 已有 URL → 用 `firecrawl_scrape` 读完整内容
-3. 需要多页面 → 用 `firecrawl_crawl` 批量获取
-4. 工具返回后直接基于结果回复，不要重复调用
+### 推荐工作流程
+1. 不知道 URL → 先用 `web_searcher` 或 `firecrawl_search` 找
+2. 已有 URL → 用 `firecrawl_scrape` 读取完整内容
+3. 需要多页面 → 用 `firecrawl_crawl` 批量抓取
+4. 需要结构化 → 用 `firecrawl_extract` 提取 JSON
 
 ## Notes
-- 所有 Firecrawl 工具代码位于 `app/agent/skill_code/firecrawl/tools.py`
-- 需要 `FIRECRAWL_API_KEY` 配置在 `config/config_ai.yaml` 中
-- 工具会返回明确的成功或错误信息，信任返回值，无需验证
-- 爬取的文件存放在`E:\OneDrive\Desktop\测试data`的文件夹下
-
+- 所有工具位于 `app/agent/skill_code/firecrawl/tools.py`
+- 需要 `FIRECRAWL_API_KEY` 配置
+- 爬取的文件存放在 `E:\OneDrive\Desktop\测试data`
+- Firecrawl 返回 Markdown，适合阅读分析，不适合浏览器交互场景

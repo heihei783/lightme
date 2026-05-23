@@ -403,3 +403,213 @@ button#send-btn {
     font-size: 12px;
     line-height: 1;
 }
+
+/* ==================== 工具 & 技能弹窗 ==================== */
+#tools-btn {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-white);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    transition: 0.2s;
+}
+#tools-btn:hover { background: rgba(255,255,255,0.5); transform: scale(1.1); }
+
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.35);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    backdrop-filter: blur(4px);
+}
+
+.modal-panel {
+    width: 560px;
+    max-height: 75vh;
+    background: rgba(255,255,255,0.92);
+    backdrop-filter: blur(20px);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 18px 24px;
+    border-bottom: 1px solid rgba(0,0,0,0.08);
+}
+.modal-header h3 { margin: 0; font-size: 17px; color: #555; }
+.modal-close-btn {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0,0,0,0.05);
+    cursor: pointer;
+    font-size: 20px;
+    color: #999;
+    line-height: 1;
+    transition: 0.2s;
+}
+.modal-close-btn:hover { background: rgba(0,0,0,0.1); color: #333; }
+
+.modal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+}
+
+.modal-summary {
+    font-size: 13px;
+    color: #999;
+    margin-bottom: 16px;
+    padding: 8px 14px;
+    background: rgba(66,133,244,0.06);
+    border-radius: 10px;
+}
+
+.modal-tab-bar {
+    display: flex;
+    gap: 0;
+    margin-bottom: 16px;
+    border-bottom: 2px solid rgba(0,0,0,0.06);
+}
+.modal-tab {
+    padding: 8px 20px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    color: #999;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: 0.2s;
+}
+.modal-tab.active {
+    color: #4285f4;
+    border-bottom-color: #4285f4;
+}
+.modal-tab:hover { color: #555; }
+
+.modal-pane { animation: fadeIn 0.25s; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* 技能卡片 */
+.skill-card {
+    background: rgba(255,255,255,0.6);
+    border: 1px solid rgba(0,0,0,0.06);
+    border-radius: 14px;
+    padding: 14px 18px;
+    margin-bottom: 12px;
+    transition: 0.2s;
+}
+.skill-card:hover { border-color: rgba(66,133,244,0.3); box-shadow: 0 2px 12px rgba(66,133,244,0.08); }
+
+.skill-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+.skill-name {
+    font-weight: 600;
+    font-size: 15px;
+    color: #444;
+}
+.skill-category {
+    font-size: 11px;
+    padding: 2px 10px;
+    border-radius: 12px;
+    white-space: nowrap;
+}
+.cat-search { background: #e8f5e9; color: #388e3c; }
+.cat-execute { background: #fff3e0; color: #e65100; }
+.cat-create { background: #e3f2fd; color: #1565c0; }
+.cat-analyze { background: #f3e5f5; color: #7b1fa2; }
+.cat-general { background: #f5f5f5; color: #616161; }
+
+.skill-desc {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 8px;
+    line-height: 1.4;
+}
+.skill-keywords {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.skill-kw-tag {
+    font-size: 11px;
+    padding: 1px 8px;
+    background: rgba(66,133,244,0.08);
+    color: #4285f4;
+    border-radius: 8px;
+}
+.skill-tools-tag {
+    font-size: 11px;
+    color: #e65100;
+    margin-top: 6px;
+}
+
+/* 工具行 */
+.tool-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    margin-bottom: 6px;
+    transition: 0.15s;
+}
+.tool-item:hover { background: rgba(0,0,0,0.03); }
+.tool-item .tool-icon {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #a1c4fd, #c2e9fb);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    flex-shrink: 0;
+}
+.tool-item .tool-info { flex: 1; }
+.tool-item .tool-name {
+    font-weight: 600;
+    font-size: 14px;
+    color: #444;
+    margin-bottom: 2px;
+}
+.tool-item .tool-desc {
+    font-size: 12px;
+    color: #999;
+    line-height: 1.3;
+}
+.tool-item .tool-skill-ref {
+    font-size: 11px;
+    color: #e65100;
+    margin-top: 2px;
+}
+
+.base-tool-section, .skill-tool-section {
+    margin-bottom: 16px;
+}
+.base-tool-section .section-label,
+.skill-tool-section .section-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #aaa;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+    padding-left: 14px;
+}

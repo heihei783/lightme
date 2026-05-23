@@ -678,6 +678,111 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderAiMessage('新对话已开启，请发送消息喵！');
     };
 
+    // ==================== 工具 & 技能弹窗 ====================
+    const toolsBtn = document.getElementById('tools-btn');
+    const toolsModal = document.getElementById('tools-modal-overlay');
+    const toolsModalClose = document.getElementById('tools-modal-close');
+    const skillsPane = document.getElementById('skills-pane');
+    const toolsPane = document.getElementById('tools-pane');
+    const modalSummary = document.getElementById('modal-summary');
+
+    toolsBtn.onclick = () => {
+        toolsModal.style.display = 'flex';
+        fetchToolsAndSkills();
+    };
+    toolsModalClose.onclick = () => { toolsModal.style.display = 'none'; };
+    toolsModal.onclick = (e) => { if (e.target === toolsModal) toolsModal.style.display = 'none'; };
+
+    // 标签页切换
+    document.querySelectorAll('.modal-tab').forEach(tab => {
+        tab.onclick = () => {
+            document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            const paneId = tab.dataset.tab;
+            skillsPane.style.display = paneId === 'skills-pane' ? 'block' : 'none';
+            toolsPane.style.display = paneId === 'tools-pane' ? 'block' : 'none';
+        };
+    });
+
+    const catClassMap = {
+        search: 'cat-search', execute: 'cat-execute',
+        create: 'cat-create', analyze: 'cat-analyze'
+    };
+
+    async function fetchToolsAndSkills() {
+        try {
+            const resp = await fetch(API_BASE + '/tools-and-skills');
+            const data = await resp.json();
+            if (data.status !== 'success') return;
+
+            // 摘要
+            modalSummary.textContent =
+                `共 ${data.total_skills} 个技能，${data.total_tools} 个工具可用`;
+
+            // 渲染技能列表
+            let skillsHTML = '';
+            data.skills.forEach(s => {
+                const kwTags = (s.keywords || []).slice(0, 8).map(k =>
+                    `<span class="skill-kw-tag">${escHtml(k)}</span>`
+                ).join('');
+                const catClass = catClassMap[s.category] || 'cat-general';
+                const toolsNote = s.tools.length
+                    ? `<div class="skill-tools-tag">🔧 ${s.tools.map(t => t.name).join(', ')}</div>`
+                    : '';
+                skillsHTML += `
+                    <div class="skill-card">
+                        <div class="skill-card-header">
+                            <span class="skill-name">${escHtml(s.name)}</span>
+                            <span class="skill-category ${catClass}">${escHtml(s.category)}</span>
+                        </div>
+                        <div class="skill-desc">${escHtml(s.description)}</div>
+                        <div class="skill-keywords">${kwTags}</div>
+                        ${toolsNote}
+                    </div>`;
+            });
+            skillsPane.innerHTML = skillsHTML || '<p style="color:#999;">没有已注册的技能</p>';
+
+            // 渲染工具列表
+            let toolsHTML = '';
+
+            // 基础工具
+            toolsHTML += '<div class="base-tool-section"><div class="section-label">基础工具</div>';
+            data.base_tools.forEach(t => {
+                toolsHTML += `
+                    <div class="tool-item">
+                        <div class="tool-icon">🔧</div>
+                        <div class="tool-info">
+                            <div class="tool-name">${escHtml(t.name)}</div>
+                            <div class="tool-desc">${escHtml(t.description)}</div>
+                        </div>
+                    </div>`;
+            });
+            toolsHTML += '</div>';
+
+            // 技能工具
+            data.skills.filter(s => s.tools.length > 0).forEach(s => {
+                toolsHTML += `<div class="skill-tool-section"><div class="section-label">${escHtml(s.name)} 专属工具</div>`;
+                s.tools.forEach(t => {
+                    toolsHTML += `
+                        <div class="tool-item">
+                            <div class="tool-icon">🧩</div>
+                            <div class="tool-info">
+                                <div class="tool-name">${escHtml(t.name)}</div>
+                                <div class="tool-desc">${escHtml(t.description)}</div>
+                            </div>
+                        </div>`;
+                });
+                toolsHTML += '</div>';
+            });
+
+            toolsPane.innerHTML = toolsHTML || '<p style="color:#999;">没有可用的工具</p>';
+
+        } catch (e) {
+            console.error('获取工具和技能列表失败:', e);
+            modalSummary.textContent = '加载失败，请检查后端连接';
+        }
+    }
+
     // ==================== 工具函数 ====================
     function escHtml(s) {
         const div = document.createElement('div');
