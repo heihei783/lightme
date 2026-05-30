@@ -613,3 +613,69 @@ button#send-btn {
     margin-bottom: 8px;
     padding-left: 14px;
 }
+
+/* ============ Shell 审批弹窗 ============ */
+.shell-approval-panel {
+    max-width: 520px;
+}
+
+.shell-cmd-display {
+    background: #1e1e2e;
+    color: #cdd6f4;
+    font-family: 'Consolas', 'Fira Code', monospace;
+    font-size: 13px;
+    padding: 16px;
+    border-radius: 8px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #333;
+}
+
+.shell-approval-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 16px;
+    justify-content: center;
+}
+
+.shell-approval-actions button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s, opacity 0.1s;
+}
+
+.shell-approval-actions button:hover {
+    transform: scale(1.03);
+}
+
+.shell-approval-actions button:active {
+    transform: scale(0.97);
+}
+
+.shell-approval-actions .btn-approve {
+    background: #22c55e;
+    color: #fff;
+}
+
+.shell-approval-actions .btn-skip {
+    background: #f59e0b;
+    color: #fff;
+}
+
+.shell-approval-actions .btn-reject {
+    background: #ef4444;
+    color: #fff;
+}
+
+.shell-approval-hint {
+    text-align: center;
+    color: #888;
+    font-size: 12px;
+    margin-top: 10px;
+}

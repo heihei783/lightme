@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LightMe 终端</title>
+    <link rel="stylesheet" href="../css/terminal.css">
+    <script>const API_BASE = 'http://127.0.0.1:8000';</script>
+</head>
+<body>
+    <div class="term-header">
+        <span class="term-title">
+            <a href="index.html" style="color:#58a6ff;text-decoration:none;">← 返回聊天</a>
+            &nbsp;|&nbsp; LightMe Agent 终端
+        </span>
+        <span class="term-status" id="term-status">● 等待连接</span>
+    </div>
+
+    <div id="term-output" class="term-output">
+        <div class="term-line term-welcome">
+╔══════════════════════════════════════════════╗<br>
+║&nbsp;&nbsp; LightMe Agent 控制台 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;║<br>
+║&nbsp;&nbsp; 实时显示 Agent 规划 / 工具调用 / 审批 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;║<br>
+╚══════════════════════════════════════════════╝
+        </div>
+    </div>
+
+    <!-- Shell 审批栏 (固定在底部) -->
+    <div id="shell-approval-bar" class="shell-approval-bar" style="display:none;">
+        <div class="shell-bar-inner">
+            <div class="shell-bar-icon">⚠</div>
+            <div class="shell-bar-info">
+                <div class="shell-bar-label">Agent 请求执行 Shell 命令</div>
+                <pre id="shell-bar-cmd" class="shell-bar-cmd"></pre>
+            </div>
+            <div class="shell-bar-actions">
+                <button class="term-btn-approve" data-action="approved">允许</button>
+                <button class="term-btn-skip" data-action="skipped">跳过</button>
+                <button class="term-btn-reject" data-action="rejected">拒绝</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="../js/terminal.js"></script>
+</body>
+</html>

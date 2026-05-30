@@ -17,6 +17,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     let imageGenProbability = 0.08;
 
     // ==================== 头像系统 ====================
+    // 从后端加载持久化的头像配置（解决 GUI 模式重启丢失问题）
+    async function loadAvatarsFromServer() {
+        try {
+            const resp = await fetch(API_BASE + '/avatar/current');
+            const data = await resp.json();
+            if (data.status === 'success') {
+                if (data.user_avatar) localStorage.setItem('avatar_filename', data.user_avatar);
+                if (data.ai_avatar) localStorage.setItem('ai_avatar_filename', data.ai_avatar);
+            }
+        } catch (e) {
+            // 后端不可用时使用 localStorage 缓存
+            console.log('头像配置加载失败，使用本地缓存');
+        }
+    }
+
     function getUserAvatarUrl() {
         const filename = localStorage.getItem('avatar_filename');
         return filename ? API_BASE + '/avatar/' + filename : null;
@@ -45,6 +60,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!file) return;
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('type', avatarUploadTarget);
         try {
             const resp = await fetch(API_BASE + '/avatar/upload', {
                 method: 'POST',
@@ -90,6 +106,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // ==================== 初始化 ====================
     async function init() {
+        await loadAvatarsFromServer();  // 从后端加载持久化头像（修复 GUI 重启丢失）
         await fetchSessions();
         await fetchCompanionInterval();
         if (currentSessionId) {
@@ -783,10 +800,118 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // ==================== Shell 命令审批 ====================
+    const shellOverlay = document.getElementById('shell-approval-overlay');
+    const shellCmdText = document.getElementById('shell-command-text');
+    const shellHint = document.getElementById('shell-approval-hint');
+    let shellPollTimer = null;
+
+    // 审批按钮点击
+    shellOverlay.querySelectorAll('.shell-approval-actions button').forEach(btn => {
+        btn.onclick = async () => {
+            const action = btn.dataset.action;
+            const approvalId = shellOverlay.dataset.approvalId;
+            btn.disabled = true;
+            try {
+                await fetch(API_BASE + '/shell/approve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ approval_id: approvalId, action: action })
+                });
+            } catch (e) {
+                console.error('审批提交失败:', e);
+            }
+            shellOverlay.style.display = 'none';
+            shellOverlay.dataset.approvalId = '';
+        };
+    });
+
+    // 关闭按钮 (等同于拒绝)
+    document.getElementById('shell-approval-close').onclick = () => {
+        const approvalId = shellOverlay.dataset.approvalId;
+        if (approvalId) {
+            fetch(API_BASE + '/shell/approve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ approval_id: approvalId, action: 'rejected' })
+            }).catch(() => {});
+        }
+        shellOverlay.style.display = 'none';
+        shellOverlay.dataset.approvalId = '';
+    };
+
+    // 点击遮罩关闭
+    shellOverlay.onclick = (e) => {
+        if (e.target === shellOverlay) {
+            document.getElementById('shell-approval-close').click();
+        }
+    };
+
+    // SSE 连接
+    function connectShellSSE() {
+        const evtSource = new EventSource(API_BASE + '/shell/approval-stream');
+
+        evtSource.onmessage = (event) => {
+            try {
+                const pending = JSON.parse(event.data);
+                handlePendingApprovals(pending);
+            } catch (e) {
+                // heartbeat
+            }
+        };
+
+        evtSource.onerror = () => {
+            evtSource.close();
+            // 5 秒后重连
+            setTimeout(connectShellSSE, 5000);
+        };
+    }
+
+    // 轮询回退 (SSE 不可用时)
+    async function pollShellPending() {
+        try {
+            const resp = await fetch(API_BASE + '/shell/pending');
+            const data = await resp.json();
+            if (data.status === 'success' && data.pending.length > 0) {
+                handlePendingApprovals(data.pending);
+            }
+        } catch (e) { /* ignore */ }
+        shellPollTimer = setTimeout(pollShellPending, 1000);
+    }
+
+    function handlePendingApprovals(pending) {
+        if (!pending || pending.length === 0) return;
+        // 取第一个待审批命令
+        const item = pending[0];
+        if (shellOverlay.style.display === 'flex' && shellOverlay.dataset.approvalId === item.id) {
+            return; // 已经在显示同样的审批
+        }
+        shellOverlay.dataset.approvalId = item.id;
+        shellCmdText.textContent = item.command;
+        shellHint.textContent = '请在 60 秒内确认，超时将自动拒绝';
+        shellOverlay.style.display = 'flex';
+        // 重新启用所有按钮
+        shellOverlay.querySelectorAll('.shell-approval-actions button').forEach(b => b.disabled = false);
+    }
+
+    // 页面加载时启动 SSE 连接
+    connectShellSSE();
+    // 轮询作为回退
+    shellPollTimer = setTimeout(pollShellPending, 1500);
+
     // ==================== 工具函数 ====================
     function escHtml(s) {
         const div = document.createElement('div');
         div.textContent = s || '';
         return div.innerHTML;
     }
+
+    // 终端页面跳转: pywebview 内跳转，浏览器开新窗口
+    window.openTerminal = function () {
+        if (typeof window.pywebview !== 'undefined') {
+            window.location.href = 'terminal.html';
+        } else {
+            window.open('terminal.html', '_blank');
+        }
+    };
 });

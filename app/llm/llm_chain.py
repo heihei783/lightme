@@ -339,12 +339,14 @@ def chat_loop(session_id: str, question: str, image_b64: str | None = None):
     对话主循环 —— 与 web 层接口完全兼容
 
     当 image_b64 不为空时，使用视觉模型分析图片并返回回复。
+
+    注意: 用 finally 保证消息持久化，即使客户端中途断开 (GeneratorExit)
+         也能把已收集到的回复存入数据库。
     """
+    full_response = ""
     try:
         history = get_session_history(session_id)
         input_messages = history + [HumanMessage(content=question)]
-
-        full_response = ""
 
         if image_b64:
             # 视觉模式：调用视觉模型
@@ -352,25 +354,26 @@ def chat_loop(session_id: str, question: str, image_b64: str | None = None):
             full_response = reply
             yield reply
         else:
-            # 普通模式：流式执行主图
-            for event in main_graph.stream(
+            # 普通模式：token 级别流式输出（stream_mode="messages"）
+            for msg_chunk, metadata in main_graph.stream(
                 {"messages": input_messages},
-                stream_mode="updates",
+                stream_mode="messages",
                 config={"recursion_limit": 150}
             ):
-                for _node_name, update in event.items():
-                    if "messages" in update:
-                        for msg in update["messages"]:
-                            if hasattr(msg, "content") and msg.content:
-                                full_response += msg.content
-                                yield msg.content
-
-        if full_response:
-            print(f"--- 对话结束，存入数据库: {full_response[:20]}... ---")
-            add_message(session_id, question, full_response)
+                # 只输出 chat/rag/agent 节点的 token，过滤掉 router 节点的输出
+                node = metadata.get("langgraph_node", "")
+                if node in ("chat", "rag", "agent") and msg_chunk.content:
+                    full_response += msg_chunk.content
+                    yield msg_chunk.content
 
     except Exception as e:
         print(f"chat_loop 出错: {e}")
+    finally:
+        # finally 无论正常结束、异常、还是 GeneratorExit 都会执行
+        # 确保消息不会因为客户端断开而丢失
+        if full_response:
+            print(f"--- 对话结束，存入数据库: {full_response[:20]}... ---")
+            add_message(session_id, question, full_response)
 
 
 # ====================================================================

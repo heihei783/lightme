@@ -21,13 +21,16 @@ LightMe FastAPI 后端服务
 """
 
 import asyncio
+import concurrent.futures
 import json
 import os
+import threading as _threading
+from time import sleep
 import uuid
 
 import uvicorn
 import yaml
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -38,6 +41,34 @@ from utils.path_tool import get_abs_path
 from app.llm.llm_chain import chat_loop
 
 app = FastAPI()
+
+# ---------------------------------------------------------------------------
+# 线程池 & 会话并发控制
+# ---------------------------------------------------------------------------
+# 聊天请求使用固定大小线程池，避免每个请求创建一个新线程
+_chat_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="ChatLoop"
+)
+
+# 防止同一会话并发请求导致消息交错/历史损坏
+_session_busy: dict[str, bool] = {}
+_session_busy_lock = _threading.Lock()
+
+
+def _try_acquire_session(sid: str) -> bool:
+    """标记会话为忙碌。返回 True 表示获取成功，False 表示已有请求在处理中。"""
+    with _session_busy_lock:
+        if _session_busy.get(sid, False):
+            return False
+        _session_busy[sid] = True
+        return True
+
+
+def _release_session(sid: str):
+    """标记会话为空闲。"""
+    with _session_busy_lock:
+        _session_busy.pop(sid, None)
+
 
 # ---------------------------------------------------------------------------
 # CORS 中间件 — 允许前端跨域访问
@@ -60,7 +91,7 @@ app.mount("/web", StaticFiles(directory="web/"), name="web")
 AVATAR_DIR = get_abs_path("data/avatars")
 os.makedirs(AVATAR_DIR, exist_ok=True)
 
-# Live2D 模型目录 — 只读引用外部项目（不复制，节约磁盘）
+# Live2D 模型目录 
 LIVE2D_MODEL_DIR = get_abs_path("web/model")
 if os.path.isdir(LIVE2D_MODEL_DIR):
     app.mount("/live2d-models", StaticFiles(directory=LIVE2D_MODEL_DIR), name="live2d-models")
@@ -101,18 +132,63 @@ async def chat(request: Request):
     Body: { message, session_id?, image? }
     - image 为可选 base64 字符串，传入时走视觉模型识图
     - 响应为 streaming text/plain
+
+    线程优化:
+      - ThreadPoolExecutor 复用线程，避免每次请求创建新线程
+      - 同一会话同时只允许一个请求，防止消息交错/历史损坏
+      - 客户端断开时通过 cancel_flag 通知工作线程提前结束
     """
     data = await request.json()
     message = data.get("message")
     sid = data.get("session_id")
-    image_b64 = data.get("image")  # 可选: base64 编码的图片
+    image_b64 = data.get("image")
 
     if not sid or sid == "new":
         sid = db.create_new_chat(message)
 
+    # 防止同一会话并发请求
+    if not _try_acquire_session(sid):
+        return StreamingResponse(
+            iter(["⚠️ 当前会话正在处理中，请等待上一条消息完成后再发送。"]),
+            media_type="text/plain",
+            headers={"X-Session-Id": sid},
+        )
+
     async def response_stream():
-        for chunk in chat_loop(sid, message, image_b64):
-            yield chunk
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        cancel_flag = [False]  # 可变容器，跨线程传递取消信号
+
+        def _run_in_thread():
+            """在线程池中运行 chat_loop，chunk 通过 queue 跨线程传递"""
+            try:
+                for chunk in chat_loop(sid, message, image_b64):
+                    if cancel_flag[0]:
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, f"\n[错误] {e}")
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)  # 结束信号
+                _release_session(sid)
+
+        _chat_executor.submit(_run_in_thread)
+
+        try:
+            while True:
+                # 检测客户端断开 → 通知工作线程停止
+                if await request.is_disconnected():
+                    cancel_flag[0] = True
+                    break
+                try:
+                    chunk = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    if chunk is None:
+                        break
+                    yield chunk
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            cancel_flag[0] = True  # 确保工作线程最终停止
 
     return StreamingResponse(
         response_stream(),
@@ -123,12 +199,44 @@ async def chat(request: Request):
 
 # ============================= 头像上传 =============================
 
+AVATAR_CONFIG_PATH = get_abs_path("data/avatar_config.json")
+
+
+def _read_avatar_config() -> dict:
+    """读取头像配置（持久化当前使用的头像文件名）"""
+    if not os.path.exists(AVATAR_CONFIG_PATH):
+        return {"user_avatar": "", "ai_avatar": ""}
+    with open(AVATAR_CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_avatar_config(cfg: dict):
+    """写入头像配置"""
+    os.makedirs(os.path.dirname(AVATAR_CONFIG_PATH), exist_ok=True)
+    with open(AVATAR_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+@app.get("/avatar/current")
+async def get_current_avatars():
+    """获取当前用户头像和 AI 头像的文件名"""
+    cfg = _read_avatar_config()
+    return {
+        "status": "success",
+        "user_avatar": cfg.get("user_avatar", ""),
+        "ai_avatar": cfg.get("ai_avatar", ""),
+    }
+
+
 @app.post("/avatar/upload")
-async def upload_avatar(file: UploadFile = File(...)):
-    """上传用户头像，保存到 data/avatars/ 目录，返回访问 URL"""
+async def upload_avatar(file: UploadFile = File(...), type: str = Form("user")):
+    """上传用户头像，保存到 data/avatars/ 目录，返回访问 URL
+    type: 'user' 或 'ai'，指定头像类型
+    """
     ext = os.path.splitext(file.filename or ".png")[1] or ".png"
     if ext.lower() not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
         return {"status": "error", "msg": "不支持的图片格式"}
+
     filename = f"avatar_{uuid.uuid4().hex[:8]}{ext}"
     filepath = os.path.join(AVATAR_DIR, filename)
     content = await file.read()
@@ -136,7 +244,16 @@ async def upload_avatar(file: UploadFile = File(...)):
         return {"status": "error", "msg": "图片大小不能超过 5MB"}
     with open(filepath, "wb") as f:
         f.write(content)
-    return {"status": "success", "filename": filename, "url": f"/avatar/{filename}"}
+
+    # 持久化当前头像文件名到 JSON 配置（解决 GUI 模式重启丢失问题）
+    cfg = _read_avatar_config()
+    if type == "ai":
+        cfg["ai_avatar"] = filename
+    else:
+        cfg["user_avatar"] = filename
+    _write_avatar_config(cfg)
+
+    return {"status": "success", "filename": filename, "url": f"/avatar/{filename}", "type": type}
 
 # 头像静态文件挂载 — 必须在 /avatar/upload 路由之后，否则 POST 会被 StaticFiles 拦截
 app.mount("/avatar", StaticFiles(directory=AVATAR_DIR), name="avatar")
@@ -453,7 +570,146 @@ async def get_tools_and_skills():
     }
 
 
+# ============================= Shell 命令审批 =============================
+
+import asyncio as _asyncio
+
+from app.agent.tools import shell_approval_mgr
+from utils.console_emitter import console
+
+
+@app.get("/shell/approval-stream")
+async def shell_approval_stream(request: Request):
+    """SSE 端点 — 当有新的 Shell 审批请求时实时推送到前端"""
+
+    async def event_stream():
+        queue = _asyncio.Queue()
+
+        def _push(pending_list: list):
+            data = json.dumps(pending_list, ensure_ascii=False)
+            try:
+                queue.put_nowait(data)
+            except Exception:
+                pass
+
+        shell_approval_mgr.add_listener(_push)
+        try:
+            # 先推送当前状态
+            yield f"data: {json.dumps(shell_approval_mgr.list_pending(), ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await _asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {data}\n\n"
+                except _asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        finally:
+            shell_approval_mgr.remove_listener(_push)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/shell/pending")
+async def shell_pending():
+    """返回当前待审批的 Shell 命令列表"""
+    return {"status": "success", "pending": shell_approval_mgr.list_pending()}
+
+
+@app.post("/shell/approve")
+async def shell_approve(data: dict):
+    """
+    审批 Shell 命令
+    Body: { "approval_id": "sh_xxx", "action": "approved" | "rejected" | "skipped" }
+    """
+    approval_id = data.get("approval_id")
+    action = data.get("action", "rejected")
+    if not approval_id:
+        return {"status": "error", "msg": "缺少 approval_id"}
+    if action not in ("approved", "rejected", "skipped"):
+        return {"status": "error", "msg": f"无效 action: {action}"}
+    shell_approval_mgr.set_result(approval_id, action)
+    return {"status": "success", "msg": f"命令 {approval_id} {action}"}
+
+
+# ============================= 控制台日志流 =============================
+
+@app.get("/console/stream")
+async def console_stream(request: Request):
+    """SSE 端点 — 实时推送 Agent 内部日志到前端终端页面。
+    新客户端连接时先回放环形缓冲区中的历史事件，再推送实时事件。"""
+
+    async def event_stream():
+        queue = _asyncio.Queue()
+
+        def _push(event: dict):
+            try:
+                queue.put_nowait(json.dumps(event, ensure_ascii=False))
+            except Exception:
+                pass
+
+        console.add_listener(_push)
+
+        def _shell_push(pending_list: list):
+            for item in pending_list:
+                console.emit_shell(item["command"], item["id"])
+
+        shell_approval_mgr.add_listener(_shell_push)
+        try:
+            # --- 历史回放: 新打开的终端页也能看到之前的日志 ---
+            history = console.get_history()
+            yield f"data: {json.dumps({'type': 'replay_start', 'count': len(history)}, ensure_ascii=False)}\n\n"
+            for event in history:
+                if event.get("type") == "shell_approval":
+                    # 历史中的审批事件已处理完毕，转为普通日志展示，不弹审批栏
+                    event = {
+                        **event,
+                        "type": "log",
+                        "sender": "Shell",
+                        "message": f"⚠ 历史审批: {event.get('command', '')[:100]}"
+                    }
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+            # 再发送当前待审批的 shell 命令（这些才是需要弹审批栏的）
+            pending = shell_approval_mgr.list_pending()
+            for item in pending:
+                console.emit_shell(item["command"], item["id"])
+
+            yield f"data: {json.dumps({'type': 'connected', 'message': f'控制台已连接 (历史 {len(history)} 条)'}, ensure_ascii=False)}\n\n"
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await _asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {data}\n\n"
+                except _asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        finally:
+            console.remove_listener(_push)
+            shell_approval_mgr.remove_listener(_shell_push)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ============================= 启动入口 =============================
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """服务关闭时清理线程池资源"""
+    _chat_executor.shutdown(wait=False)
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

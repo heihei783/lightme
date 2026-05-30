@@ -109,7 +109,7 @@ def create_new_chat(first_question: str = "新对话"):
 
 
 #  获取列表逻辑
-def get_all_chats():
+def get_all_chats() -> list[dict]:
     init_chat_list_table()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()

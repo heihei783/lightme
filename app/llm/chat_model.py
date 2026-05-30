@@ -72,7 +72,7 @@ def get_chat_model():
         model=config_ai['CHAT_MODEL_NAME'],
         custom_llm_provider=config_ai['CHAT_MODEL_PROVIDER'],
         api_base=config_ai['CHAT_MODEL_URL'],
-        streaming=False,
+        streaming=True,
     )
     return Chat_model
 

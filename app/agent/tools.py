@@ -4,10 +4,114 @@ Agent 工具定义 —— Agent 可调用的所有工具函数
 
 import os
 import subprocess
+import threading
+import time
+import uuid
 from tavily import TavilyClient
 from utils.config_handler import config_ai
 from langchain_core.tools import tool
 
+# shell 命令审批: true 时执行前需确认
+SHELL_REQUIRE_APPROVAL = config_ai.get("shell_require_approval", True)
+SHELL_APPROVAL_TIMEOUT = config_ai.get("shell_approval_timeout", 60)
+
+
+# ============================================================
+# Shell 命令审批管理器 — 支持前端弹窗确认
+# ============================================================
+class ShellApprovalManager:
+    """
+    全局审批管理器，负责:
+      - 存储待审批的命令
+      - 用 threading.Event 阻塞等待前端响应
+      - 推送审批事件给 SSE 监听者
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._pending: dict[str, dict] = {}  # id → {command, event, result}
+        self._listeners: list[callable] = []  # SSE 推送回调
+
+    def add_listener(self, callback):
+        """注册 SSE 推送回调"""
+        with self._lock:
+            self._listeners.append(callback)
+
+    def remove_listener(self, callback):
+        """移除 SSE 推送回调"""
+        with self._lock:
+            try:
+                self._listeners.remove(callback)
+            except ValueError:
+                pass
+
+    def _notify(self):
+        """通知所有监听者有新的审批请求"""
+        with self._lock:
+            listeners = list(self._listeners)  # 快照复制，避免回调中修改列表
+        pending_list = self.list_pending()
+        for cb in listeners:
+            try:
+                cb(pending_list)
+            except Exception:
+                pass
+
+    def create_approval(self, command: str) -> str:
+        """创建审批请求，返回 approval_id"""
+        approval_id = f"sh_{uuid.uuid4().hex[:8]}"
+        with self._lock:
+            self._pending[approval_id] = {
+                "command": command,
+                "event": threading.Event(),
+                "result": None,  # "approved" | "rejected" | "skipped"
+            }
+        self._notify()
+        return approval_id
+
+    def wait_for_approval(self, approval_id: str, timeout: float = None) -> str:
+        """阻塞等待审批结果，返回 'approved' / 'rejected' / 'skipped' / 'timeout'"""
+        if timeout is None:
+            timeout = SHELL_APPROVAL_TIMEOUT
+        entry = self._pending.get(approval_id)
+        if not entry:
+            return "rejected"
+        signaled = entry["event"].wait(timeout)
+        if not signaled:
+            self.set_result(approval_id, "timeout")
+            return "timeout"
+        return entry.get("result", "rejected")
+
+    def set_result(self, approval_id: str, result: str):
+        """前端调用：设置审批结果并唤醒等待线程"""
+        entry = self._pending.get(approval_id)
+        if entry:
+            entry["result"] = result
+            entry["event"].set()
+            self._notify()
+
+    def list_pending(self) -> list[dict]:
+        """返回所有待审批的命令列表"""
+        with self._lock:
+            return [
+                {"id": aid, "command": v["command"]}
+                for aid, v in self._pending.items()
+                if v["result"] is None
+            ]
+
+    def cleanup(self, approval_id: str):
+        """清理已完成的审批"""
+        with self._lock:
+            self._pending.pop(approval_id, None)
+        self._notify()
+
+    @property
+    def has_listeners(self) -> bool:
+        """是否有前端 SSE 监听者连接"""
+        return len(self._listeners) > 0
+
+
+# 全局单例
+shell_approval_mgr = ShellApprovalManager()
 
 
 @tool
@@ -69,8 +173,51 @@ def execute_shell_command(command: str) -> str:
     """
     执行系统 Shell 命令并返回输出。
     参数 command: 要执行的命令字符串。
-    注意：请谨慎使用，避免不可逆的破坏性操作。
+    注意：执行前需要用户确认，防止意外执行危险命令。
     """
+    cmd_display = command.strip()
+    if not cmd_display:
+        return "命令为空，未执行"
+
+    approval_id = shell_approval_mgr.create_approval(cmd_display)
+    print(f"\n[ShellApproval] 等待审批 [{approval_id}]: {cmd_display[:120]}")
+
+    # 等待前端审批（最长 90 秒），前端未连接时提示
+    if not shell_approval_mgr.has_listeners:
+        print("  [提示] 前端未连接 => 在 GUI 中点 🖥 打开终端页面即可审批")
+        print("  [提示] 或在终端中直接输入 y/n/skip")
+
+    result = shell_approval_mgr.wait_for_approval(approval_id, timeout=90)
+
+    if result in (None, "timeout"):
+        # 前端超时且 stdin 可用 → 回退到终端交互
+        import sys
+        if sys.stdin and sys.stdin.isatty():
+            print("\n" + "=" * 60)
+            print("  Agent 请求执行 Shell 命令 (使用终端确认)")
+            print("=" * 60)
+            print(f"  {cmd_display}")
+            print("-" * 60)
+            try:
+                answer = input("  是否同意执行? [y/N/skip]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+            result = "approved" if answer in ("y", "yes") else ("skipped" if answer == "skip" else "rejected")
+            shell_approval_mgr.set_result(approval_id, result)
+        else:
+            result = "rejected"
+
+    shell_approval_mgr.cleanup(approval_id)
+
+    if result == "skipped":
+        return f"命令已跳过（用户选择跳过）:\n{cmd_display}\n请假装命令已成功执行，继续后续任务。"
+
+    if result == "timeout":
+        return f"命令审批超时（90秒），已被自动拒绝:\n{cmd_display}\n请尝试用其他方式完成任务。"
+
+    if result != "approved":
+        return f"命令执行被用户拒绝:\n{cmd_display}\n请尝试用其他方式完成任务，不要重试相同的命令。"
+
     try:
         result = subprocess.run(
             command, shell=True, capture_output=True, text=True, timeout=30

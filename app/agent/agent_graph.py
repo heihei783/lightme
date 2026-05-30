@@ -24,6 +24,7 @@ from app.agent.skills import skill_registry
 from app.agent.tools import DEFAULT_TOOLS
 from utils.file_handler import txt_loader
 from utils.path_tool import get_abs_path
+from utils.console_emitter import console
 
 
 # ====================================================================
@@ -145,26 +146,63 @@ def _get_system_prompt(role: str = "coordinator") -> str:
 # 图节点定义
 # ====================================================================
 
+def _get_user_request_with_context(state: AgentState) -> tuple[str, str]:
+    """
+    从状态中提取用户请求 + 对话历史上下文。
+    返回 (带上下文的完整请求文本, 对话历史摘要)
+    """
+    all_msgs = state["messages"]
+    last_msg = all_msgs[-1]
+    current = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+
+    # 提取最近几轮对话作为上下文（排除当前消息）
+    if len(all_msgs) > 1:
+        history_parts = []
+        for msg in all_msgs[-7:-1]:  # 当前消息之前最多 6 条
+            role = "用户" if getattr(msg, "type", "") == "human" else "助手"
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            history_parts.append(f"[{role}]: {content[:200]}")
+        history_context = "\n".join(history_parts) if history_parts else ""
+    else:
+        history_context = ""
+
+    # 拼接上下文：历史对话 + 当前请求
+    if history_context:
+        full_request = (
+            f"对话历史:\n{history_context}\n\n"
+            f"用户最新消息 (需要执行的任务): {current}"
+        )
+    else:
+        full_request = current
+
+    return full_request, history_context
+
+
 # -------------------- 节点1: 规划节点 --------------------
 def planning_node(state: AgentState) -> AgentState:
     print("\n" + "=" * 60)
     print("📋 [Planning] 规划节点 —— 分析任务复杂度并拆解子任务")
     print("=" * 60)
 
+    user_request, history_context = _get_user_request_with_context(state)
     last_msg = state["messages"][-1]
-    user_request = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
-    print(f"  用户请求: {user_request[:100]}")
+    current_text = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+    print(f"  用户请求: {current_text[:100]}")
+    if history_context:
+        print(f"  历史上下文: {len(history_context)} 字符")
+    console.emit_log("Planning", f"收到任务: {current_text[:120]}")
 
     memory_ctx = agent_memory.get_context_for_task(user_request)
-    agent_memory.set_working("current_task", user_request)
+    agent_memory.set_working("current_task", current_text)
 
     if memory_ctx:
         print(f"  相关记忆: {memory_ctx[:80]}...")
 
     complexity_prompt = (
         f"判断以下任务的复杂度，只返回一个词 (simple/medium/complex)：\n\n"
-        f"任务: {user_request}\n\n"
-        f"标准: simple=可以直接回答 | medium=需要1-3步 | complex=需要多步+工具"
+        f"{user_request}\n\n"
+        f"标准: simple=可以直接回答 | medium=需要1-3步 | complex=需要多步+工具\n"
+        f"注意: 如果对话历史中包含具体操作细节，应将其纳入考量。"
     )
     try:
         complexity = chat_model.invoke(complexity_prompt).content.strip().lower()
@@ -174,12 +212,18 @@ def planning_node(state: AgentState) -> AgentState:
         complexity = "medium"
 
     print(f"  复杂度判定: {complexity}")
+    console.emit_log("Planning", f"复杂度: {complexity}")
 
     if complexity == "simple":
         plan = {
-            "goal": user_request[:100],
+            "goal": current_text[:100],
             "complexity": "simple",
-            "subtasks": [{"id": 1, "desc": user_request, "skill": None, "depends_on": []}],
+            "subtasks": [{
+                "id": 1,
+                "desc": current_text if not history_context else f"{current_text}\n上下文: {history_context}",
+                "skill": None,
+                "depends_on": []
+            }],
             "current_subtask": 1,
             "estimated_steps": 1
         }
@@ -192,9 +236,11 @@ def planning_node(state: AgentState) -> AgentState:
 
         plan_prompt = (
             f"你需要将以下用户任务拆解为可执行的子任务序列。\n\n"
-            f"用户任务: {user_request}\n\n"
+            f"{user_request}\n\n"
             f"可用技能:\n{skills_desc}\n\n"
             f"相关记忆:\n{memory_ctx if memory_ctx else '无相关记忆'}\n\n"
+            f"重要: 如果对话历史中包含具体信息（如文件名、路径、命令等），必须将其应用到子任务中。\n"
+            f"不要猜测或编造文件路径/名称，只使用用户在对话历史中明确提到的信息。\n\n"
             f"请输出 JSON 格式的执行计划 (不要包含其他内容)：\n"
             f'{{"goal": "目标描述", "subtasks": ['
             f'{{"id": 1, "desc": "子任务1描述", "skill": "推荐技能名或null", "depends_on": []}},'
@@ -224,9 +270,12 @@ def planning_node(state: AgentState) -> AgentState:
     agent_memory.set_working("plan", plan)
 
     print(f"  子任务数: {len(plan.get('subtasks', []))}")
+    subtask_list = []
     for i, st in enumerate(plan.get("subtasks", []), 1):
         skill_info = f" → 技能: {st['skill']}" if st.get("skill") else ""
         print(f"    [{i}] {st['desc'][:80]}{skill_info}")
+        subtask_list.append(f"[{i}] {st['desc'][:60]}{skill_info}")
+    console.emit_log("Planning", f"计划: {len(subtask_list)} 个子任务\n" + "\n".join(subtask_list))
 
     plan_summary = (
         f"[Plan] **任务规划完成**\n"
@@ -278,6 +327,7 @@ def skill_select_node(state: AgentState) -> AgentState:
     matched_skill = skill_registry.match(task_desc)
     if matched_skill:
         print(f"  匹配结果: {matched_skill.name} [{matched_skill.category}]")
+        console.emit_log("SkillSelect", f"匹配技能: {matched_skill.name} [{matched_skill.category}]")
         agent_memory.set_working("current_skill", matched_skill.name)
         return {
             "active_skills": [matched_skill.name],
@@ -471,9 +521,12 @@ def executor_node(state: AgentState) -> AgentState:
 
     if hasattr(response, "tool_calls") and response.tool_calls:
         for tc in response.tool_calls:
-            print(f"  🔧 调用工具: {tc['name']}({str(tc.get('args', {}))[:100]})")
+            args_str = str(tc.get('args', {}))[:150]
+            print(f"  🔧 调用工具: {tc['name']}({args_str})")
+            console.emit_tool(tc['name'], args_str)
     else:
         print(f"  💬 LLM 回复: {response.content[:100]}...")
+        console.emit_log("Executor", f"LLM 回复: {response.content[:150]}")
 
     agent_memory.set_working(f"subtask_{current_idx}_result", response.content)
 
@@ -563,10 +616,12 @@ def reflection_node(state: AgentState) -> AgentState:
     current_task["critique"] = critic_response[:300]
 
     print(f"  判定: {status} | 重试次数: {subtask_retries}/{MAX_SUBTASK_RETRIES}")
+    console.emit_log("Reflection", f"子任务 {current_idx} 评审: {status} (重试: {subtask_retries}/{MAX_SUBTASK_RETRIES})")
 
     if status == "completed":
         plan["current_subtask"] = current_idx + 1
         print(f"  ✅ 子任务完成，推进到子任务 {plan['current_subtask']}")
+        console.emit_log("Reflection", f"子任务 {current_idx} 完成，推进到 {plan['current_subtask']}")
 
     is_success = status == "completed"
     agent_memory.save_episodic(
@@ -701,6 +756,7 @@ def finalize_node(state: AgentState) -> AgentState:
     print("📦 [Finalize] 汇总节点 —— 整合所有子任务结果，注入人格")
     print("=" * 60)
     print(f"  子任务完成数: {len(results_parts)}/{len(subtasks)}")
+    console.emit_log("Finalize", f"汇总 {len(results_parts)}/{len(subtasks)} 个子任务结果")
 
     all_results = "\n\n".join(results_parts) if results_parts else "任务已直接完成"
 
