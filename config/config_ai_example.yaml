@@ -1,0 +1,88 @@
+# ============================================================
+# LightMe AI 配置文件示例
+# ============================================================
+
+# -------------------- 主对话模型 --------------------
+CHAT_MODEL_NAME: deepseek-v4-flash          # 模型名称
+CHAT_MODEL_PROVIDER: deepseek               # 提供商 (deepseek / openai / moonshot 等)
+CHAT_MODEL_API_KEY: sk-your-api-key-here    # API Key
+CHAT_MODEL_URL: https://api.deepseek.com    # API 地址
+
+# -------------------- Embedding 模型 (RAG 检索) --------------------
+EMBEDDING_MODEL_NAME: Qwen/Qwen3-Embedding-0.6B
+EMBEDDING_MODEL_API_KEY: sk-your-api-key-here
+EMBEDDING_MODEL_URL: https://api.siliconflow.cn/v1/embeddings
+
+# -------------------- 视觉模型 (AI 陪伴截图分析) --------------------
+VISION_MODEL_NAME: doubao-seed-2-0-mini-260428
+VISION_MODEL_API_KEY: ark-your-api-key-here
+VISION_MODEL_URL: https://ark.cn-beijing.volces.com/api/v3
+
+# -------------------- 图片生成模型 --------------------
+IMAGE_GEN_MODEL_NAME: stabilityai/stable-diffusion-3-5-large
+IMAGE_GEN_MODEL_API_KEY: sk-your-api-key-here
+IMAGE_GEN_MODEL_URL: https://api.siliconflow.cn/v1
+
+IMAGE_GEN_PROBABILITY: 0.08                # AI 随机生成图片的概率 (0~1)
+
+# -------------------- TTS 语音合成 --------------------
+MY_FISH_AUDIO_KEY: your-fish-audio-key-here # Fish Audio API Key
+
+# -------------------- RAG 检索配置 --------------------
+rag_open: true                              # 是否开启 RAG 检索
+top_k: 5                                    # 检索返回的最大文档数
+child_chunk_size: 100                       # 子块大小
+parent_chunk_size: 500                      # 父块大小
+chunk_overlap: 20                           # 分块重叠大小
+
+# -------------------- Agent 配置 --------------------
+agent_open: true                            # 是否开启 Agent 模式
+TAVILY_API_KEY: tvly-dev-your-key-here      # Tavily 搜索 API Key
+FIRECRAWL_API_KEY: fc-your-key-here         # Firecrawl 网页抓取 API Key
+shell_require_approval: true                # Shell 命令是否需要用户审批
+shell_approval_timeout: 60                  # 审批超时时间 (秒)
+
+# -------------------- AI 陪伴 --------------------
+companion_interval: 90                      # AI 陪伴主动发言间隔 (秒)
+
+# -------------------- 聊天记录 --------------------
+max_history_len: 10                         # 最大保留的历史消息轮数
+
+# -------------------- 对话模型预设 (可在 UI 中切换) --------------------
+CHAT_MODEL_PRESETS:
+  - name: DeepSeek V4 Flash
+    model_name: deepseek-v4-flash
+    provider: deepseek
+    api_key: sk-your-api-key-here
+    base_url: https://api.deepseek.com
+  - name: Minimax
+    model_name: MiniMax-M2.7
+    provider: MiniMax
+    api_key: sk-your-api-key-here
+    base_url: https://api.minimaxi.com/v1
+  - name: moonshot
+    model_name: kimi-k2.5
+    provider: moonshot
+    api_key: sk-your-api-key-here
+    base_url: https://api.moonshot.cn/v1
+
+# -------------------- Embedding 模型预设 --------------------
+EMBEDDING_MODEL_PRESETS:
+  - name: Qwen3 Embed 0.6B
+    model_name: Qwen/Qwen3-Embedding-0.6B
+    api_key: sk-your-api-key-here
+    base_url: https://api.siliconflow.cn/v1/embeddings
+
+# -------------------- 图片生成模型预设 --------------------
+IMAGE_GEN_MODEL_PRESETS:
+  - name: doubao-seedream-4-5-251128
+    model_name: doubao-seedream-4-5-251128
+    api_key: ark-your-api-key-here
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+
+# -------------------- 视觉模型预设 --------------------
+VISION_MODEL_PRESETS:
+  - name: doubao-seed-2-0-mini-260428
+    model_name: doubao-seed-2-0-mini-260428
+    api_key: ark-your-api-key-here
+    base_url: https://ark.cn-beijing.volces.com/api/v3
