@@ -164,6 +164,15 @@ body {
     background: var(--glass-white);
     cursor: pointer;
     font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+.live2d-controls button img {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
 }
 .live2d-controls .recording {
     background: #ff7675 !important;
@@ -204,7 +213,7 @@ body {
     outline: none;
     cursor: pointer;
 }
-#tts-mute-btn, #config-btn {
+#tts-mute-btn, #config-btn, #term-btn {
     width: 32px; height: 32px;
     border-radius: 50%;
     border: 1px solid var(--glass-border);
@@ -212,6 +221,15 @@ body {
     cursor: pointer;
     font-size: 14px;
     line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+#tts-mute-btn img, #config-btn img, #term-btn img, #companion-btn img {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
 }
 #tts-mute-btn.muted { background: #ff7675; color: #fff; }
 #companion-btn {
@@ -375,6 +393,15 @@ button#send-btn {
     cursor: pointer;
     font-size: 18px;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+#upload-img-btn img {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
 }
 
 #image-preview-row {

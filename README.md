@@ -2,6 +2,11 @@
 
 一款基于 LLM Agent 的智能桌面伴侣，能够独立完成任务拆解、自主执行，同时提供情感陪伴。
 
+##项目截图
+![主页](./data/images/主页.png)
+![任务执行](./data/images/执行确认.png)
+![终端显示](./data/images/终端显示.png)
+![配置文件](./data/images/配置文件.png)
 ## 功能概览
 
 ### 核心能力
@@ -89,7 +94,10 @@ lightme/
 ├── utils/                 # 工具模块
 │   ├── rag_handler.py       # RAG 流水线
 │   ├── db_handler.py        # 数据库
-│   └── file_handler.py      # 文件处理
+│   ├── file_handler.py      # 文件处理
+│   ├── console_emitter.py   # 控制台事件 SSE 推送 (环形缓冲区)
+│   ├── config_handler.py    # 配置管理
+│   └── path_tool.py         # 路径工具
 ├── config/                # 配置文件（YAML/JSON）
 ├── data/                  # 运行时数据（数据库/向量库/上传文件）
 └── pyproject.toml
@@ -106,19 +114,8 @@ lightme/
 
 API Key 等敏感信息通过配置文件管理，不硬编码在代码中。首次使用时请参考 `config_ai_example.yaml` 创建 `config_ai.yaml`。
 
-## 红岩网校考核任务对应
 
-本项目作为红岩网校 Agent 方向的统一实践项目，覆盖以下考核任务：
 
-| 任务 | 本项目对应实现 |
-|------|---------------|
-| 2. Master Stacks | LangGraph（Agent 框架）+ LiteLLM（API 网关）+ Chroma（向量数据库）+ Unstructured（文档解析） |
-| 3. Further RAG | Agentic RAG + 查询路由 + 查询转换 + 层次索引 + 多 Agent 检索 |
-| 4. Autonomous Agents | 任务规划 + 文件读写 + 命令执行 + 沙箱隔离 + 审批机制 |
-| 5. Agent Skills | Markdown 技能定义 + SkillsRegistry + 多技能协同 |
-| 6. Agent Memory | 短期/长期/情景/工作记忆 + SQLite 持久化 |
-| 7. GUI Agents | Midscene.js 浏览器自动化 + Firecrawl 网页交互 |
-| 8. Multi-Agent System | 协调者/研究员/执行者/评审者四角色协作 |
 
 ## 开发要求
 

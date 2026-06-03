@@ -86,6 +86,7 @@ app.add_middleware(
 # 静态文件挂载
 # ---------------------------------------------------------------------------
 app.mount("/web", StaticFiles(directory="web/"), name="web")
+app.mount("/images", StaticFiles(directory="data/images"), name="images")
 
 # 头像存储目录（mount 在 /avatar/upload 路由之后注册，避免被 StaticFiles 拦截 POST）
 AVATAR_DIR = get_abs_path("data/avatars")
