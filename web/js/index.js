@@ -278,6 +278,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 data.history.forEach(msg => {
                     if (msg.role === 'user-msg') {
                         renderUserMessage(msg.content);
+                    } else if (msg.role === 'ai-img') {
+                        renderHistoryImage(msg.image, msg.content);
                     } else {
                         renderAiMessage(msg.content);
                     }
@@ -515,19 +517,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 speakText(fullText);
             }
 
-            // 8% 概率触发生图
-            if (Math.random() < imageGenProbability && text) {
+            // 随机概率触发 AI 虚拟生活场景生图
+            if (Math.random() < imageGenProbability && currentSessionId) {
                 try {
+                    console.log('[ImageGen] 触发，概率:', imageGenProbability, 'session:', currentSessionId);
                     const imgResp = await fetch(API_BASE + '/image-gen', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ prompt: text.slice(0, 300) })
+                        body: JSON.stringify({ session_id: currentSessionId })
                     });
                     const imgData = await imgResp.json();
+                    console.log('[ImageGen] 响应:', imgData.status, imgData.scene || imgData.msg);
                     if (imgData.status === 'success' && imgData.image) {
-                        renderGeneratedImage(imgData.image, text.slice(0, 50));
+                        renderGeneratedImage(imgData.image, imgData.scene || 'AI 的生活瞬间');
                     }
-                } catch (e) { /* 静默失败 */ }
+                } catch (e) {
+                    console.error('[ImageGen] 请求失败:', e);
+                }
             }
 
         } catch (error) {
@@ -536,15 +542,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    function renderGeneratedImage(base64data, caption) {
+    function renderGeneratedImage(imageSrc, caption) {
         const row = document.createElement('div');
         row.className = 'msg-row ai-row';
         const img = document.createElement('img');
-        img.src = 'data:image/png;base64,' + base64data;
+        // 支持原始 base64、data: URL 或路径
+        if (imageSrc.startsWith('data:')) {
+            img.src = imageSrc;
+        } else if (imageSrc.startsWith('/')) {
+            img.src = API_BASE + imageSrc;
+        } else {
+            img.src = 'data:image/png;base64,' + imageSrc;
+        }
         img.style.cssText = 'max-width:200px;border-radius:12px;display:block;';
         const cap = document.createElement('span');
         cap.style.cssText = 'font-size:11px;color:#999;margin-top:4px;display:block;';
-        cap.textContent = '🎨 ' + (caption || 'AI 生成');
+        cap.textContent = '🎨 ' + (caption || 'AI 的生活瞬间');
         const bubble = document.createElement('div');
         bubble.className = 'message ai-msg';
         bubble.appendChild(img);
@@ -554,6 +567,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         bindAvatarClicks(row);
         chatWindow.appendChild(row);
         chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    function renderHistoryImage(imagePath, caption) {
+        renderGeneratedImage(imagePath, caption);
     }
 
     // ==================== TTS 语音合成 ====================

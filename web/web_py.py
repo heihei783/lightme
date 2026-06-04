@@ -21,6 +21,7 @@ LightMe FastAPI 后端服务
 """
 
 import asyncio
+import base64
 import concurrent.futures
 import json
 import os
@@ -107,12 +108,27 @@ async def get_sessions():
 
 @app.get("/history/{session_id}")
 async def get_chat_history(session_id: str):
-    """获取指定会话的历史消息"""
+    """获取指定会话的历史消息（支持文本和图片消息）"""
     history = db.get_history_obj(session_id)
     messages = []
     for msg in history.messages:
         role = "user-msg" if msg.type == "human" else "ai-msg"
-        messages.append({"role": role, "content": msg.content})
+        content = msg.content
+        # 检测 AI 图片消息: ... [IMG]image_id  或  [IMG]image_id|scene_desc
+        img_idx = content.find("[IMG]")
+        if role == "ai-msg" and img_idx != -1:
+            tail = content[img_idx + len("[IMG]"):].strip()
+            # 兼容旧格式 [IMG]img_id|scene_desc
+            image_id = tail.split("|")[0].strip()
+            messages.append({
+                "role": "ai-img",
+                "content": "AI 的生活瞬间",
+                "image": f"/image/{image_id}" if image_id else "",
+            })
+        else:
+            # 截断过长消息，加速前端渲染
+            display = content[:500] if len(content) > 500 else content
+            messages.append({"role": role, "content": display})
     return {"status": "success", "history": messages}
 
 
@@ -261,19 +277,34 @@ app.mount("/avatar", StaticFiles(directory=AVATAR_DIR), name="avatar")
 
 # ============================= 图片生成 =============================
 
+@app.get("/image/{image_id}")
+async def serve_image(image_id: str):
+    """从 SQLite 数据库读取生成图片并返回 PNG"""
+    from fastapi.responses import Response
+
+    img = db.get_image(image_id)
+    if not img:
+        return Response(status_code=404)
+    return Response(
+        content=base64.b64decode(img["b64"]),
+        media_type="image/png",
+    )
+
+
 @app.post("/image-gen")
 async def image_gen(request: Request):
-    """调用生图模型，根据 prompt 生成图片，返回 base64"""
-    from app.llm.image_gen import generate_image
+    """AI 虚拟生活场景生图：根据人格+对话上下文构思场景并生图，存入 SQLite"""
+    from app.llm.image_gen import generate_life_scene_image
 
     data = await request.json()
-    prompt = data.get("prompt", "")
-    if not prompt:
-        return {"status": "error", "msg": "缺少 prompt 参数"}
-    img_b64 = generate_image(prompt)
-    if img_b64:
-        return {"status": "success", "image": img_b64}
-    return {"status": "error", "msg": "图片生成失败，请检查生图模型配置"}
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return {"status": "error", "msg": "缺少 session_id 参数"}
+    result = generate_life_scene_image(session_id)
+    if result:
+        img_b64, scene_desc, image_id = result
+        return {"status": "success", "image": img_b64, "scene": scene_desc, "image_id": image_id}
+    return {"status": "error", "msg": "图片生成失败，请检查生图模型和对话模型配置"}
 
 
 # ============================= TTS 语音合成 =============================

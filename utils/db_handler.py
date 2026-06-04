@@ -66,6 +66,74 @@ def add_message(session_id: str, message: str, response_text: str):
     conn.close()
 
 
+def init_images_table():
+    """初始化生成图片存储表"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""CREATE TABLE IF NOT EXISTS generated_images (
+        image_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        scene_desc TEXT,
+        image_b64 TEXT NOT NULL,
+        created_at TEXT
+    )""")
+    conn.commit()
+    conn.close()
+
+
+def add_image_message(session_id: str, scene_desc: str, image_b64: str) -> str:
+    """
+    将 AI 生成的虚拟生活场景图片 base64 存入 generated_images 表，
+    同时在聊天历史中写入轻量引用 [IMG]image_id。
+    返回 image_id。
+    """
+    init_images_table()
+    time_str = get_time()
+    image_id = f"img_{uuid.uuid4().hex[:12]}"
+
+    # 写入图片表
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO generated_images (image_id, session_id, scene_desc, image_b64, created_at) VALUES (?, ?, ?, ?, ?)",
+        (image_id, session_id, scene_desc, image_b64, time_str),
+    )
+    conn.commit()
+    conn.close()
+
+    # 在聊天历史中写入轻量引用（不存完整场景描述，加速加载）
+    history_obj = get_history_obj(session_id)
+    content = f"[IMG]{image_id}"
+    history_obj.add_ai_message(f"[{time_str}] {content}")
+
+    # 更新会话活跃时间
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE chat_list SET update_time = ? WHERE session_id = ?", (time_str, session_id))
+    conn.commit()
+    conn.close()
+
+    return image_id
+
+
+def get_image(image_id: str) -> dict | None:
+    """根据 image_id 从数据库获取图片 base64 和描述"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT image_b64, scene_desc FROM generated_images WHERE image_id = ?", (image_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"b64": row[0], "scene": row[1]}
+    return None
+
+
+def delete_session_images(session_id: str):
+    """删除指定会话的所有生成图片"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM generated_images WHERE session_id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
 # 4. 清空会话的历史记录
 def clear_session(session_id: str):
     history_obj = get_history_obj(session_id)
@@ -141,6 +209,10 @@ def delete_chat_list(session_id: str):
             pass
 
         conn.commit()
+
+        # 删除该会话的生成图片
+        delete_session_images(session_id)
+
         return True
 
     except Exception as e:

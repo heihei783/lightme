@@ -7,18 +7,53 @@ const Live2DCtrl = (() => {
         {
             name: "22娘",
             path: M + "22/",
-            outfits: ["model.default.json", "model.2016.xmas.1.json", "model.2017.cba-normal.json", "model.2017.summer.normal.1.json", "model.2018.spring.json"]
+            outfits: [
+                "model.default.json",
+                "model.2016.xmas.1.json", "model.2016.xmas.2.json",
+                "model.2017.cba-normal.json", "model.2017.cba-super.json",
+                "model.2017.newyear.json", "model.2017.school.json",
+                "model.2017.summer.normal.1.json", "model.2017.summer.normal.2.json",
+                "model.2017.summer.super.1.json", "model.2017.summer.super.2.json",
+                "model.2017.tomo-bukatsu.high.json", "model.2017.tomo-bukatsu.low.json",
+                "model.2017.valley.json", "model.2017.vdays.json",
+                "model.2018.bls-summer.json", "model.2018.bls-winter.json",
+                "model.2018.lover.json", "model.2018.spring.json"
+            ]
         },
         {
             name: "33娘",
             path: M + "33/",
-            outfits: ["model.default.json", "model.2016.xmas.1.json", "model.2017.cba-normal.json", "model.2017.summer.normal.1.json", "model.2018.spring.json"]
+            outfits: [
+                "model.default.json",
+                "model.2016.xmas.1.json", "model.2016.xmas.2.json",
+                "model.2017.cba-normal.json", "model.2017.cba-super.json",
+                "model.2017.newyear.json", "model.2017.school.json",
+                "model.2017.summer.normal.1.json", "model.2017.summer.normal.2.json",
+                "model.2017.summer.super.1.json", "model.2017.summer.super.2.json",
+                "model.2017.tomo-bukatsu.high.json", "model.2017.tomo-bukatsu.low.json",
+                "model.2017.valley.json", "model.2017.vdays.json",
+                "model.2018.bls-summer.json", "model.2018.bls-winter.json",
+                "model.2018.lover.json", "model.2018.spring.json"
+            ]
         },
         { name: "康娜", path: M + "Kobayaxi/", outfits: ["Kobayaxi.model.json"] },
         { name: "血小板", path: M + "platelet/", outfits: ["model.json"] },
         { name: "纱雾", path: M + "sagiri/", outfits: ["sagiri.model.json"] },
         { name: "小埋", path: M + "xiaomai/", outfits: ["xiaomai.model.json"] }
     ];
+
+    const outfitLabels = {
+        "model.default.json": "默认",
+        "model.2016.xmas.1.json": "圣诞2016①", "model.2016.xmas.2.json": "圣诞2016②",
+        "model.2017.cba-normal.json": "CBA普通", "model.2017.cba-super.json": "CBA超级",
+        "model.2017.newyear.json": "新年2017", "model.2017.school.json": "校园",
+        "model.2017.summer.normal.1.json": "夏日普通①", "model.2017.summer.normal.2.json": "夏日普通②",
+        "model.2017.summer.super.1.json": "夏日超级①", "model.2017.summer.super.2.json": "夏日超级②",
+        "model.2017.tomo-bukatsu.high.json": "社团高", "model.2017.tomo-bukatsu.low.json": "社团低",
+        "model.2017.valley.json": "情人节2017", "model.2017.vdays.json": "Vdays",
+        "model.2018.bls-summer.json": "BLS夏日", "model.2018.bls-winter.json": "BLS冬日",
+        "model.2018.lover.json": "情人节2018", "model.2018.spring.json": "春季2018"
+    };
 
     const touchTexts = ["哎呀，别摸我啦！", "讨厌！", "哼~~", "再戳我就生气了哦！", "是在检查身体吗？", "哇！吓我一跳！", "你好呀主人~"];
 
@@ -213,6 +248,14 @@ const Live2DCtrl = (() => {
         showMsg("你好，我是 " + roleData[charIdx].name);
     }
 
+    function nextOutfit() {
+        const role = roleData[charIdx];
+        outfitIdx = (outfitIdx + 1) % role.outfits.length;
+        loadModel();
+        const label = outfitLabels[role.outfits[outfitIdx]] || role.outfits[outfitIdx];
+        showMsg(role.name + " - " + label);
+    }
+
     function getCharName() { return roleData[charIdx].name; }
 
     function init() {
@@ -223,7 +266,9 @@ const Live2DCtrl = (() => {
         initASR();
         const charBtn = document.getElementById('l2d-char-btn');
         if (charBtn) charBtn.onclick = nextCharacter;
+        const outfitBtn = document.getElementById('l2d-outfit-btn');
+        if (outfitBtn) outfitBtn.onclick = nextOutfit;
     }
 
-    return { init, loadModel, showMsg, playVoiceWithLipSync, nextCharacter, getCharName };
+    return { init, loadModel, showMsg, playVoiceWithLipSync, nextCharacter, nextOutfit, getCharName };
 })();
