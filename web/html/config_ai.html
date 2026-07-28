@@ -1,101 +1,276 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LightMe AI 配置</title>
-    <link rel="stylesheet" href="../css/index.css">
+    <title>LightMe 设置中心</title>
     <link rel="stylesheet" href="../css/config_ai.css">
 </head>
-<body style="background: linear-gradient(120deg, #a1c4fd 0%, #c2e9fb 100%); min-height: 100vh;">
-    <div class="config-container">
-        <a href="index.html" class="back-link">← 返回聊天</a>
-        <h1>⚙️ AI 配置中心</h1>
-        <p class="subtitle">管理模型预设、人格切换、功能开关</p>
 
-        <!-- 功能开关 -->
-        <div class="config-card">
-            <h3 style="margin-top:0;color:#555;">功能开关</h3>
-            <div class="toggle-row">
-                <span class="label">RAG 知识库问答</span>
-                <label class="toggle-switch"><input type="checkbox" id="toggle-rag" onchange="saveToggles()"><span class="toggle-slider"></span></label>
+<body>
+    <div class="settings-shell">
+        <aside class="settings-sidebar">
+            <div class="settings-brand">
+                <a href="index.html" class="back-link" aria-label="返回聊天">←</a>
+                <span class="brand-mark">LM</span>
+                <span class="brand-copy">
+                    <strong>LightMe</strong>
+                    <small>Settings</small>
+                </span>
             </div>
-            <div class="toggle-row">
-                <span class="label">Agent 智能体</span>
-                <label class="toggle-switch"><input type="checkbox" id="toggle-agent" onchange="saveToggles()"><span class="toggle-slider"></span></label>
-            </div>
-            <div class="toggle-row">
-                <span class="label">陪伴模式间隔 (秒)</span>
-                <input type="number" id="companion-interval" value="10" min="3" max="120" style="width:70px;padding:6px 10px;border-radius:10px;border:1px solid #ddd;font-size:14px;text-align:center;" onchange="saveCompanionInterval()">
-            </div>
-            <div class="toggle-row">
-                <span class="label">随机生图概率</span>
-                <input type="number" id="image-gen-probability" value="0.08" min="0" max="1" step="0.01" style="width:70px;padding:6px 10px;border-radius:10px;border:1px solid #ddd;font-size:14px;text-align:center;" onchange="saveImageGenProbability()">
-        </div>
 
-        <!-- 知识库文件管理 -->
-        <div class="config-card">
-            <h3 style="margin-top:0;color:#555;">📚 知识库文件</h3>
-            <div id="rag-file-list"></div>
-            <div style="display:flex;gap:10px;margin-top:12px;">
-                <input type="file" id="rag-file-input" accept=".txt,.md,.pdf,.docx" style="display:none;" onchange="uploadRagFile()">
-                <button class="btn-add" onclick="document.getElementById('rag-file-input').click()">+ 上传文件</button>
-            </div>
-        </div>
+            <nav class="settings-nav" aria-label="设置导航">
+                <a href="#general" class="nav-item active" data-section="general"><span>01</span>基础能力</a>
+                <a href="#runtime" class="nav-item" data-section="runtime"><span>02</span>Agent Runtime</a>
+                <a href="#models" class="nav-item" data-section="models"><span>03</span>模型服务</a>
+                <a href="#knowledge" class="nav-item" data-section="knowledge"><span>04</span>知识库</a>
+                <a href="#personality" class="nav-item" data-section="personality"><span>05</span>人格预设</a>
+            </nav>
 
-        <!-- 模型配置卡片 -->
-        <div class="config-card">
-            <div class="tabs">
-                <button class="tab-btn active" data-tab="chat">💬 对话模型</button>
-                <button class="tab-btn" data-tab="embedding">📊 嵌入模型</button>
-                <button class="tab-btn" data-tab="vision">👁️ 视觉模型</button>
-                <button class="tab-btn" data-tab="image_gen">🎨 生图模型</button>
+            <div class="sidebar-runtime-status">
+                <span class="status-dot" id="config-status-dot"></span>
+                <span>
+                    <small>CONFIG SERVICE</small>
+                    <strong id="config-service-status">正在连接</strong>
+                </span>
             </div>
-            <div id="tab-chat" class="tab-content active"></div>
-            <div id="tab-embedding" class="tab-content"></div>
-            <div id="tab-vision" class="tab-content"></div>
-            <div id="tab-image_gen" class="tab-content"></div>
-        </div>
+        </aside>
 
-        <!-- 人格预设 -->
-        <div class="config-card">
-            <h3 style="margin-top:0;color:#555;">🎭 人格预设</h3>
-            <div id="personality-list"></div>
-            <button class="btn-add" onclick="openPersonalityModal()">+ 添加人格预设</button>
+        <main class="settings-main">
+            <header class="settings-header">
+                <div>
+                    <div class="page-kicker">SYSTEM CONFIGURATION</div>
+                    <h1>设置中心</h1>
+                    <p>管理模型、Agent Runtime、知识库与对话人格。</p>
+                </div>
+                <div class="header-actions">
+                    <a href="workflow.html" class="header-link">执行拓扑</a>
+                    <a href="terminal.html" class="header-link">Agent Trace</a>
+                </div>
+            </header>
+
+            <section class="settings-section" id="general" data-observe-section>
+                <div class="section-heading">
+                    <div>
+                        <span class="section-index">01 / GENERAL</span>
+                        <h2>基础能力</h2>
+                        <p>控制聊天入口启用的主要能力和自动行为。</p>
+                    </div>
+                </div>
+                <div class="setting-list">
+                    <div class="setting-row">
+                        <div class="setting-copy">
+                            <strong>RAG 知识库问答</strong>
+                            <span>允许对话检索已上传的文档内容。</span>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="toggle-rag">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-row">
+                        <div class="setting-copy">
+                            <strong>Agent 智能体</strong>
+                            <span>启用 Planner-Executor、工具调用和运行 Trace。</span>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="toggle-agent">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-row">
+                        <div class="setting-copy">
+                            <strong>陪伴模式间隔</strong>
+                            <span>两次主动交互之间的最短等待时间。</span>
+                        </div>
+                        <div class="input-with-unit">
+                            <input type="number" id="companion-interval" value="10" min="3" max="120">
+                            <span>秒</span>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <div class="setting-copy">
+                            <strong>随机生图概率</strong>
+                            <span>陪伴模式触发场景图片的概率，范围 0 到 1。</span>
+                        </div>
+                        <input class="compact-input" type="number" id="image-gen-probability" value="0.08" min="0" max="1" step="0.01">
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-section runtime-section" id="runtime" data-observe-section>
+                <div class="section-heading split-heading">
+                    <div>
+                        <span class="section-index">02 / AGENT RUNTIME</span>
+                        <h2>Planner-Executor 运行策略</h2>
+                        <p>限制单次任务的资源消耗，并控制规划、并行和审计行为。</p>
+                    </div>
+                    <div class="runtime-state" id="runtime-state">
+                        <span></span>
+                        <b>等待配置</b>
+                    </div>
+                </div>
+
+                <div class="budget-grid">
+                    <label class="budget-field">
+                        <span>最大步骤</span>
+                        <strong>STEP BUDGET</strong>
+                        <input type="number" id="agent-max-steps" min="1" max="500" value="40">
+                    </label>
+                    <label class="budget-field">
+                        <span>最长运行时间</span>
+                        <strong>TIMEOUT / SEC</strong>
+                        <input type="number" id="agent-max-runtime" min="5" max="3600" value="180">
+                    </label>
+                    <label class="budget-field">
+                        <span>Token 预算</span>
+                        <strong>TOKEN BUDGET</strong>
+                        <input type="number" id="agent-max-tokens" min="1000" max="1000000" step="1000" value="8000">
+                    </label>
+                    <label class="budget-field">
+                        <span>并行子任务</span>
+                        <strong>PARALLELISM</strong>
+                        <input type="number" id="planner-parallelism" min="1" max="16" value="2">
+                    </label>
+                </div>
+
+                <div class="setting-list runtime-toggles">
+                    <div class="setting-row">
+                        <div class="setting-copy">
+                            <strong>结构化 Planner</strong>
+                            <span>生成带依赖、风险和验收条件的子任务计划。</span>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="planner-enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-row">
+                        <div class="setting-copy">
+                            <strong>持久化 Trace</strong>
+                            <span>保存事件、计划版本和执行指标以供审计。</span>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="trace-enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="setting-row">
+                        <div class="setting-copy">
+                            <strong>评测模式</strong>
+                            <span>降低非确定性行为，便于与基础 Agent Loop 对比。</span>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="eval-mode">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="section-actions">
+                    <span class="restart-note">运行中的任务不会被修改；新任务读取最新配置。</span>
+                    <button class="primary-btn" id="save-runtime-btn" type="button">保存运行策略</button>
+                </div>
+            </section>
+
+            <section class="settings-section" id="models" data-observe-section>
+                <div class="section-heading">
+                    <div>
+                        <span class="section-index">03 / MODEL SERVICES</span>
+                        <h2>模型服务</h2>
+                        <p>管理对话、嵌入、视觉和图片生成服务的连接预设。</p>
+                    </div>
+                </div>
+                <div class="model-tabs" role="tablist" aria-label="模型类型">
+                    <button class="tab-btn active" type="button" role="tab" aria-selected="true" data-tab="chat">对话模型</button>
+                    <button class="tab-btn" type="button" role="tab" aria-selected="false" data-tab="embedding">嵌入模型</button>
+                    <button class="tab-btn" type="button" role="tab" aria-selected="false" data-tab="vision">视觉模型</button>
+                    <button class="tab-btn" type="button" role="tab" aria-selected="false" data-tab="image_gen">生图模型</button>
+                </div>
+                <div id="tab-chat" class="tab-content active" role="tabpanel"></div>
+                <div id="tab-embedding" class="tab-content" role="tabpanel"></div>
+                <div id="tab-vision" class="tab-content" role="tabpanel"></div>
+                <div id="tab-image_gen" class="tab-content" role="tabpanel"></div>
+            </section>
+
+            <section class="settings-section" id="knowledge" data-observe-section>
+                <div class="section-heading split-heading">
+                    <div>
+                        <span class="section-index">04 / KNOWLEDGE</span>
+                        <h2>知识库文件</h2>
+                        <p>支持 TXT、Markdown、PDF 和 Word 文档，单文件最大 20 MB。</p>
+                    </div>
+                    <button class="secondary-btn" id="rag-upload-btn" type="button">上传文件</button>
+                    <input type="file" id="rag-file-input" accept=".txt,.md,.pdf,.docx" hidden>
+                </div>
+                <div id="rag-file-list" class="resource-list"></div>
+            </section>
+
+            <section class="settings-section" id="personality" data-observe-section>
+                <div class="section-heading split-heading">
+                    <div>
+                        <span class="section-index">05 / PERSONALITY</span>
+                        <h2>人格预设</h2>
+                        <p>管理系统提示词及当前对话人格。</p>
+                    </div>
+                    <button class="secondary-btn" id="add-personality-btn" type="button">添加预设</button>
+                </div>
+                <div id="personality-list" class="resource-list"></div>
+            </section>
+        </main>
+    </div>
+
+    <div class="save-toast" id="save-toast" role="status" aria-live="polite"></div>
+
+    <div class="modal-overlay" id="model-modal" aria-hidden="true">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="model-modal-title">
+            <div class="modal-heading">
+                <div>
+                    <span class="section-index">MODEL PRESET</span>
+                    <h3 id="model-modal-title">编辑预设</h3>
+                </div>
+                <button class="modal-close" type="button" data-close-modal="model-modal" aria-label="关闭">×</button>
+            </div>
+            <div class="form-grid">
+                <label>预设名称<input type="text" id="modal-name" placeholder="例如 DeepSeek V4"></label>
+                <label>模型名称<input type="text" id="modal-model-name" placeholder="例如 deepseek-v4-flash"></label>
+                <label class="wide-field">API Key<input type="password" id="modal-api-key" placeholder="sk-..." autocomplete="new-password"></label>
+                <label class="wide-field">Base URL<input type="url" id="modal-base-url" placeholder="https://api.example.com"></label>
+                <label class="wide-field">Provider<input type="text" id="modal-provider" placeholder="例如 deepseek"></label>
+            </div>
+            <div class="modal-actions">
+                <button class="danger-btn" id="model-modal-delete" type="button">删除</button>
+                <span></span>
+                <button class="ghost-btn" type="button" data-close-modal="model-modal">取消</button>
+                <button class="primary-btn" id="model-modal-save" type="button">保存预设</button>
+            </div>
         </div>
     </div>
 
-    <!-- 模型预设编辑弹窗 -->
-    <div class="modal-overlay" id="model-modal">
-        <div class="modal">
-            <h3 id="model-modal-title">编辑预设</h3>
-            <label>预设名称</label><input type="text" id="modal-name" placeholder="如: DeepSeek V4">
-            <label>模型名称</label><input type="text" id="modal-model-name" placeholder="如: deepseek-v4-flash">
-            <label>API Key</label><input type="text" id="modal-api-key" placeholder="sk-...">
-            <label>Base URL</label><input type="text" id="modal-base-url" placeholder="https://api.deepseek.com">
-            <label>Provider</label><input type="text" id="modal-provider" placeholder="如: deepseek">
-            <div class="btn-row">
-                <button class="btn btn-del" id="modal-delete" style="display:none;" onclick="deleteCurrentPreset()">删除</button>
-                <button class="btn btn-edit" onclick="closeModal('model-modal')">取消</button>
-                <button class="btn btn-switch" onclick="saveCurrentPreset()">保存</button>
+    <div class="modal-overlay" id="personality-modal" aria-hidden="true">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="personality-modal-title">
+            <div class="modal-heading">
+                <div>
+                    <span class="section-index">PERSONALITY PRESET</span>
+                    <h3 id="personality-modal-title">编辑人格预设</h3>
+                </div>
+                <button class="modal-close" type="button" data-close-modal="personality-modal" aria-label="关闭">×</button>
             </div>
-        </div>
-    </div>
-
-    <!-- 人格预设编辑弹窗 -->
-    <div class="modal-overlay" id="personality-modal">
-        <div class="modal">
-            <h3 id="personality-modal-title">编辑人格预设</h3>
-            <label>人格名称</label><input type="text" id="personality-name" placeholder="如: 猫娘">
-            <label>提示词内容</label><textarea id="personality-content" placeholder="描述这个人格的特点..."></textarea>
-            <div class="btn-row">
-                <button class="btn btn-del" id="personality-delete" style="display:none;" onclick="deletePersonality()">删除</button>
-                <button class="btn btn-edit" onclick="closeModal('personality-modal')">取消</button>
-                <button class="btn btn-switch" onclick="savePersonality()">保存</button>
+            <div class="form-grid single-column">
+                <label>人格名称<input type="text" id="personality-name" placeholder="例如 技术搭档"></label>
+                <label>提示词内容<textarea id="personality-content" placeholder="描述这个人格的沟通方式、边界和偏好"></textarea></label>
+            </div>
+            <div class="modal-actions">
+                <button class="danger-btn" id="personality-modal-delete" type="button">删除</button>
+                <span></span>
+                <button class="ghost-btn" type="button" data-close-modal="personality-modal">取消</button>
+                <button class="primary-btn" id="personality-modal-save" type="button">保存预设</button>
             </div>
         </div>
     </div>
 
     <script src="../js/config_ai.js"></script>
 </body>
+
 </html>

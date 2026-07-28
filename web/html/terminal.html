@@ -13,7 +13,74 @@
             <a href="index.html" style="color:#58a6ff;text-decoration:none;">← 返回聊天</a>
             &nbsp;|&nbsp; LightMe Agent 终端
         </span>
-        <span class="term-status" id="term-status">● 等待连接</span>
+        <div class="term-header-right">
+            <button id="trace-toggle-btn" class="term-small-btn term-secondary-btn">隐藏 Trace</button>
+            <button id="trace-refresh-btn" class="term-small-btn">刷新 Trace</button>
+            <span class="term-status" id="term-status">● 等待连接</span>
+        </div>
+    </div>
+
+    <div class="trace-panel" id="trace-panel">
+        <div class="trace-summary">
+            <div>
+                <div class="trace-kicker">Agent Trace</div>
+                <div class="trace-run-id" id="trace-run-id">等待选择运行</div>
+            </div>
+            <div class="trace-metrics">
+                <span id="trace-status">状态 -</span>
+                <span id="trace-steps">步数 -</span>
+                <span id="trace-time">耗时 -</span>
+                <span id="trace-tokens">Tokens -</span>
+                <span id="trace-plan-count">计划 -</span>
+            </div>
+        </div>
+        <div class="trace-focus">
+            <div class="trace-section">
+                <div class="trace-section-title">动态 DAG</div>
+                <div id="trace-dag" class="trace-dag"></div>
+            </div>
+            <div class="trace-section">
+                <div class="trace-section-title">任务概览</div>
+                <div id="trace-flow" class="trace-flow"></div>
+            </div>
+        </div>
+        <div class="trace-focus">
+            <div class="trace-section">
+                <div class="trace-section-title">阶段轨迹</div>
+                <div id="trace-timeline" class="trace-timeline"></div>
+            </div>
+            <div class="trace-section">
+                <div class="trace-section-title">状态说明</div>
+                <div class="trace-legend">
+                    <span class="dag-dot state-ready"></span> ready
+                    <span class="dag-dot state-waiting"></span> waiting
+                    <span class="dag-dot state-done"></span> done
+                    <span class="dag-dot state-blocked"></span> blocked
+                    <span class="dag-dot state-needs-replan"></span> replan
+                </div>
+            </div>
+        </div>
+        <div class="trace-body">
+            <div class="trace-section">
+                <div class="trace-section-title">当前计划</div>
+                <div id="trace-plans" class="trace-list"></div>
+            </div>
+            <div class="trace-section">
+                <div class="trace-section-title">关键事件</div>
+                <div id="trace-events" class="trace-list"></div>
+            </div>
+        </div>
+        <pre id="trace-detail" class="trace-detail">选择事件查看 payload</pre>
+    </div>
+
+    <div id="trace-zoom-overlay" class="trace-zoom-overlay" style="display:none;">
+        <div class="trace-zoom-panel">
+            <div class="trace-zoom-header">
+                <strong id="trace-zoom-title">放大查看</strong>
+                <button id="trace-zoom-close" type="button">关闭</button>
+            </div>
+            <div id="trace-zoom-content" class="trace-zoom-content"></div>
+        </div>
     </div>
 
     <div id="term-output" class="term-output">

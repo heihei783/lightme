@@ -9,7 +9,7 @@ LangGraph 通用 Agent 系统
   5. 工具调用与命令执行
 """
 
-import json
+import time
 from typing import TypedDict, Annotated, List, Literal, Any, Dict
 
 from langgraph.graph import StateGraph, END
@@ -22,6 +22,24 @@ from app.agent.memory import agent_memory
 from app.agent.skill_loader import SkillDef, get_skill_tools
 from app.agent.skills import skill_registry
 from app.agent.tools import DEFAULT_TOOLS
+from app.agent.runtime import (
+    RuntimeBudget,
+    allowed_tools_for_subtask,
+    budget_exceeded,
+    detect_tool_policy_violations,
+    extract_json_object,
+    get_next_subtask_index,
+    get_ready_subtasks,
+    message_token_usage,
+    new_run_id,
+    normalize_plan,
+    record_trace,
+    repair_plan_for_capabilities,
+    should_replan,
+    trace_store,
+    update_plan_after_subtask,
+    verify_subtask_result,
+)
 from utils.file_handler import txt_loader
 from utils.path_tool import get_abs_path
 from utils.console_emitter import console
@@ -40,6 +58,40 @@ class AgentState(TypedDict):
     final_output: str#最终输出结果
     tool_iterations: int#工具调用迭代次数
     subtask_retries: int#子任务重试次数
+    session_id: str#会话隔离 ID
+    run_id: str#单次 Agent 运行 ID
+    started_at: float#运行开始时间
+    step_count: int#Runtime 总执行步数
+    token_count: int#累计 Token 用量
+    trace_enabled: bool#是否记录结构化 Trace
+    stop_reason: str#预算或异常终止原因
+    recent_tool_calls: List[str]#最近工具调用签名，用于重复调用检测
+
+
+def _emit_runtime_metrics(state: Dict[str, Any], node: str, step_count: int | None = None, token_count: int | None = None, extra: Dict[str, Any] | None = None) -> None:
+    started_at = float(state.get("started_at") or time.time())
+    plan = state.get("plan") or {}
+    subtasks = plan.get("subtasks") or []
+    completed = sum(1 for st in subtasks if st.get("status") == "completed")
+    failed = sum(1 for st in subtasks if st.get("status") == "failed")
+    payload = {
+        "step_count": step_count if step_count is not None else state.get("step_count", 0),
+        "token_count": token_count if token_count is not None else state.get("token_count", 0),
+        "elapsed_seconds": max(0, round(time.time() - started_at, 1)),
+        "total_subtasks": len(subtasks),
+        "completed_subtasks": completed,
+        "failed_subtasks": failed,
+        "current_subtask": plan.get("current_subtask", 1) if subtasks else 0,
+        "stop_reason": state.get("stop_reason", ""),
+    }
+    if extra:
+        payload.update(extra)
+    console.emit_metrics(
+        state.get("session_id") or "default",
+        state.get("run_id") or "",
+        node,
+        payload,
+    )
 
 
 # ====================================================================
@@ -180,6 +232,7 @@ def _get_user_request_with_context(state: AgentState) -> tuple[str, str]:
 
 # -------------------- 节点1: 规划节点 --------------------
 def planning_node(state: AgentState) -> AgentState:
+    step_count = state.get("step_count", 0) + 1
     print("\n" + "=" * 60)
     print("📋 [Planning] 规划节点 —— 分析任务复杂度并拆解子任务")
     print("=" * 60)
@@ -191,6 +244,7 @@ def planning_node(state: AgentState) -> AgentState:
     if history_context:
         print(f"  历史上下文: {len(history_context)} 字符")
     console.emit_log("Planning", f"收到任务: {current_text[:120]}")
+    record_trace(state, "node_start", "planning", {"step": step_count, "request": current_text[:500]})
 
     memory_ctx = agent_memory.get_context_for_task(user_request)
     agent_memory.set_working("current_task", current_text)
@@ -204,8 +258,11 @@ def planning_node(state: AgentState) -> AgentState:
         f"标准: simple=可以直接回答 | medium=需要1-3步 | complex=需要多步+工具\n"
         f"注意: 如果对话历史中包含具体操作细节，应将其纳入考量。"
     )
+    token_count = state.get("token_count", 0)
     try:
-        complexity = chat_model.invoke(complexity_prompt).content.strip().lower()
+        complexity_msg = chat_model.invoke(complexity_prompt)
+        token_count += message_token_usage(complexity_msg)
+        complexity = complexity_msg.content.strip().lower()
         if complexity not in ("simple", "medium", "complex"):
             complexity = "medium"
     except Exception:
@@ -214,17 +271,30 @@ def planning_node(state: AgentState) -> AgentState:
     print(f"  复杂度判定: {complexity}")
     console.emit_log("Planning", f"复杂度: {complexity}")
 
-    if complexity == "simple":
-        plan = {
+    previous_plan = state.get("plan") or {}
+    is_replan = bool(previous_plan.get("subtasks"))
+    failed_task = ""
+    if is_replan:
+        for st in previous_plan.get("subtasks", []):
+            if st.get("status") == "adjust":
+                failed_task = str(st.get("id"))
+                break
+
+    if complexity == "simple" and not is_replan:
+        raw_plan = {
             "goal": current_text[:100],
-            "complexity": "simple",
             "subtasks": [{
-                "id": 1,
+                "id": "1",
                 "desc": current_text if not history_context else f"{current_text}\n上下文: {history_context}",
+                "expected_result": "直接回答用户请求并给出可交付结果",
+                "task_type": "general",
+                "risk_level": "low",
+                "acceptance_checks": ["result_is_non_empty"],
+                "allowed_tools": [],
+                "max_tool_calls": 1,
                 "skill": None,
                 "depends_on": []
             }],
-            "current_subtask": 1,
             "estimated_steps": 1
         }
     else:
@@ -234,48 +304,125 @@ def planning_node(state: AgentState) -> AgentState:
             for s in skills_available
         ])
 
+        replan_hint = ""
+        if is_replan:
+            replan_hint = (
+                f"\n当前计划执行遇到问题，需要局部重新规划。\n"
+                f"原计划 JSON:\n{previous_plan}\n"
+                f"失败/需调整子任务 ID: {failed_task or '未知'}\n"
+                f"请尽量保留已完成子任务，只替换不可继续的部分。\n"
+            )
+
         plan_prompt = (
-            f"你需要将以下用户任务拆解为可执行的子任务序列。\n\n"
-            f"{user_request}\n\n"
+            f"你需要将以下用户任务拆解为可执行的子任务 DAG。\n\n"
+            f"{user_request}\n"
+            f"{replan_hint}\n\n"
             f"可用技能:\n{skills_desc}\n\n"
             f"相关记忆:\n{memory_ctx if memory_ctx else '无相关记忆'}\n\n"
             f"重要: 如果对话历史中包含具体信息（如文件名、路径、命令等），必须将其应用到子任务中。\n"
             f"不要猜测或编造文件路径/名称，只使用用户在对话历史中明确提到的信息。\n\n"
+            f"规划约束:\n"
+            f"- 子任务必须有唯一 id、清晰 desc、expected_result、depends_on。\n"
+            f"- 每个子任务必须包含 task_type、risk_level、acceptance_checks、allowed_tools、max_tool_calls。\n"
+            f"- skill 只能从可用技能列表中选择；不确定时用 null。\n"
+            f"- task_type 只能取 research/read/write/execute/browse/analyze/create/verify/general。\n"
+            f"- risk_level 只能取 low/medium/high；执行命令、启动应用、移动/覆盖文件必须标为 high。\n"
+            f"- acceptance_checks 写成可验证的短句，例如 result_contains_exit_or_execution_status。\n"
+            f"- allowed_tools 只列当前子任务真正需要的工具，避免把所有工具都暴露给 Executor。\n"
+            f"- max_tool_calls 应按风险限制：low=1, medium=2, high<=3。\n"
+            f"- 避免过度拆分，普通任务 1-3 步，复杂任务不超过 8 步。\n"
+            f"- 依赖必须形成 DAG，不能循环依赖，不能依赖不存在的 id。\n"
+            f"- 局部重新规划时保留已完成子任务，只替换失败子任务及其后续受影响任务。\n\n"
             f"请输出 JSON 格式的执行计划 (不要包含其他内容)：\n"
             f'{{"goal": "目标描述", "subtasks": ['
-            f'{{"id": 1, "desc": "子任务1描述", "skill": "推荐技能名或null", "depends_on": []}},'
-            f'{{"id": 2, "desc": "子任务2描述", "skill": "推荐技能名或null", "depends_on": [1]}}'
+            f'{{"id": "1", "desc": "子任务1描述", "expected_result": "验收标准", "task_type": "read", "risk_level": "low", "acceptance_checks": ["result_is_non_empty"], "allowed_tools": ["read_file_content"], "max_tool_calls": 1, "skill": "推荐技能名或null", "depends_on": []}},'
+            f'{{"id": "2", "desc": "子任务2描述", "expected_result": "验收标准", "task_type": "verify", "risk_level": "low", "acceptance_checks": ["result_contains_pass_fail_judgement"], "allowed_tools": ["execute_python_code"], "max_tool_calls": 1, "skill": "推荐技能名或null", "depends_on": ["1"]}}'
             f'], "estimated_steps": N}}'
         )
 
         try:
-            response = chat_model.invoke(plan_prompt).content.strip()
-            if "```json" in response:
-                response = response.split("```json")[1].split("```")[0]
-            elif "```" in response:
-                response = response.split("```")[1].split("```")[0]
-            plan = json.loads(response)
-            plan["complexity"] = complexity
-            plan["current_subtask"] = 1
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            response_msg = chat_model.invoke(plan_prompt)
+            token_count += message_token_usage(response_msg)
+            response = response_msg.content.strip()
+            raw_plan = extract_json_object(response)
+        except (ValueError, KeyError, IndexError) as e:
             print(f"[Planning] JSON 解析失败: {e}，使用默认计划")
-            plan = {
+            raw_plan = {
                 "goal": user_request[:100],
-                "complexity": complexity,
-                "subtasks": [{"id": 1, "desc": user_request, "skill": None, "depends_on": []}],
-                "current_subtask": 1,
+                "subtasks": [{
+                    "id": "1",
+                    "desc": user_request,
+                    "expected_result": "给出可交付的任务结果",
+                    "task_type": "general",
+                    "risk_level": "low",
+                    "acceptance_checks": ["result_is_non_empty"],
+                    "skill": None,
+                    "depends_on": [],
+                }],
                 "estimated_steps": 1
             }
 
+    plan = normalize_plan(
+        raw_plan,
+        goal=current_text,
+        complexity=complexity,
+        previous_plan=previous_plan if is_replan else None,
+        replan_from=failed_task or None,
+    )
+    plan = repair_plan_for_capabilities(plan, skill_registry.list_all())
+    if is_replan:
+        completed = [st for st in previous_plan.get("subtasks", []) if st.get("status") == "completed"]
+        if completed:
+            completed_by_id = {str(st.get("id")): st for st in completed}
+            for st in plan.get("subtasks", []):
+                old = completed_by_id.get(str(st.get("id")))
+                if old:
+                    st.update({
+                        "status": "completed",
+                        "result": old.get("result", ""),
+                        "critique": old.get("critique", ""),
+                    })
+            plan = update_plan_after_subtask(plan)
+
     agent_memory.set_working("plan", plan)
+    if state.get("trace_enabled", True):
+        trace_store.record_plan(state["run_id"], plan)
+    record_trace(
+        state,
+        "plan_created" if not is_replan else "plan_replanned",
+        "planning",
+        {
+            "plan_id": plan.get("plan_id"),
+            "version": plan.get("version"),
+            "ready_subtasks": plan.get("ready_subtasks", []),
+            "validation_errors": plan.get("validation_errors", []),
+            "quality": plan.get("quality", {}),
+            "capability_repairs": plan.get("capability_repairs", []),
+            "budget_warnings": plan.get("budget_warnings", []),
+            "state_graph": plan.get("state_graph", {}),
+        },
+    )
 
     print(f"  子任务数: {len(plan.get('subtasks', []))}")
+    print(f"  计划质量: {plan.get('quality', {}).get('score', 'N/A')} ({plan.get('quality', {}).get('level', 'unknown')})")
+    if plan.get("capability_repairs"):
+        console.emit_log("Planning", f"能力修复: {plan['capability_repairs']}")
+    if plan.get("budget_warnings"):
+        console.emit_log("Planning", f"预算约束: {plan['budget_warnings']}")
     subtask_list = []
     for i, st in enumerate(plan.get("subtasks", []), 1):
         skill_info = f" → 技能: {st['skill']}" if st.get("skill") else ""
-        print(f"    [{i}] {st['desc'][:80]}{skill_info}")
-        subtask_list.append(f"[{i}] {st['desc'][:60]}{skill_info}")
+        meta_info = f" [{st.get('task_type', 'general')}/{st.get('risk_level', 'low')}]"
+        print(f"    [{i}] {st['desc'][:80]}{skill_info}{meta_info}")
+        subtask_list.append(f"[{i}] {st['desc'][:60]}{skill_info}{meta_info}")
     console.emit_log("Planning", f"计划: {len(subtask_list)} 个子任务\n" + "\n".join(subtask_list))
+    _emit_runtime_metrics(
+        {**state, "plan": plan},
+        "planning",
+        step_count,
+        token_count,
+        {"status": "running", "phase": "规划完成"},
+    )
 
     plan_summary = (
         f"[Plan] **任务规划完成**\n"
@@ -286,18 +433,21 @@ def planning_node(state: AgentState) -> AgentState:
     )
     for st in plan.get("subtasks", []):
         skill_info = f" [技能: {st['skill']}]" if st.get("skill") else ""
-        plan_summary += f"\n    {st['id']}. {st['desc'][:60]}{skill_info}"
+        plan_summary += f"\n    {st['id']}. {st['desc'][:60]}{skill_info} [{st.get('task_type', 'general')}/{st.get('risk_level', 'low')}]"
 
     return {
         "plan": plan,
         "memory_context": memory_ctx,
         "messages": [AIMessage(content=plan_summary)],
-        "final_output": ""
+        "final_output": "",
+        "step_count": step_count,
+        "token_count": token_count,
     }
 
 
 # -------------------- 节点2: 技能选择节点 --------------------
 def skill_select_node(state: AgentState) -> AgentState:
+    step_count = state.get("step_count", 0) + 1
     plan = state.get("plan", {})
     subtasks = plan.get("subtasks", [])
     current_idx = plan.get("current_subtask", 1)
@@ -307,6 +457,12 @@ def skill_select_node(state: AgentState) -> AgentState:
 
     current_task = subtasks[current_idx - 1]
     task_desc = current_task.get("desc", "")
+    record_trace(
+        state,
+        "node_start",
+        "skill_select",
+        {"step": step_count, "subtask_id": current_task.get("id"), "desc": task_desc[:500]},
+    )
 
     print("\n" + "-" * 40)
     print(f"🎯 [SkillSelect] 技能选择 —— 子任务 {current_idx}: {task_desc[:60]}")
@@ -317,10 +473,13 @@ def skill_select_node(state: AgentState) -> AgentState:
         if skill:
             print(f"  规划推荐技能: {skill.name}")
             agent_memory.set_working("current_skill", skill.name)
+            record_trace(state, "skill_selected", "skill_select", {"subtask_id": current_task.get("id"), "skill": skill.name, "source": "planner"})
+            _emit_runtime_metrics(state, "skill_select", step_count, extra={"status": "running", "phase": f"选择技能 {skill.name}"})
             return {
                 "active_skills": [skill.name],
                 "tool_iterations": 0,
-                "messages": [AIMessage(content=f"[Tool] 选择技能: {skill.name} — {skill.description}")]
+                "messages": [AIMessage(content=f"[Tool] 选择技能: {skill.name} — {skill.description}")],
+                "step_count": step_count,
             }
         print(f"  规划推荐技能 '{current_task['skill']}' 未找到，尝试自动匹配...")
 
@@ -329,22 +488,28 @@ def skill_select_node(state: AgentState) -> AgentState:
         print(f"  匹配结果: {matched_skill.name} [{matched_skill.category}]")
         console.emit_log("SkillSelect", f"匹配技能: {matched_skill.name} [{matched_skill.category}]")
         agent_memory.set_working("current_skill", matched_skill.name)
+        record_trace(state, "skill_selected", "skill_select", {"subtask_id": current_task.get("id"), "skill": matched_skill.name, "source": "auto_match"})
+        _emit_runtime_metrics(state, "skill_select", step_count, extra={"status": "running", "phase": f"匹配技能 {matched_skill.name}"})
         return {
             "active_skills": [matched_skill.name],
             "tool_iterations": 0,
-            "messages": [AIMessage(content=f"[Tool] 自动匹配技能: {matched_skill.name} — {matched_skill.description}")]
+            "messages": [AIMessage(content=f"[Tool] 自动匹配技能: {matched_skill.name} — {matched_skill.description}")],
+            "step_count": step_count,
         }
 
     print("  未匹配到技能，使用通用 LLM")
     agent_memory.set_working("current_skill", "general_llm")
+    record_trace(state, "skill_selected", "skill_select", {"subtask_id": current_task.get("id"), "skill": "general_llm", "source": "fallback"})
+    _emit_runtime_metrics(state, "skill_select", step_count, extra={"status": "running", "phase": "通用 LLM"})
     return {
         "active_skills": ["general_llm"],
         "tool_iterations": 0,
-        "messages": [AIMessage(content="[Tool] 使用通用 LLM 能力处理任务")]
+        "messages": [AIMessage(content="[Tool] 使用通用 LLM 能力处理任务")],
+        "step_count": step_count,
     }
 
 
-MAX_TOOL_ITERATIONS = 8
+MAX_TOOL_ITERATIONS = RuntimeBudget.from_config().max_steps
 MAX_SUBTASK_RETRIES = 3
 
 
@@ -425,6 +590,23 @@ def _safe_truncate_history(messages: List, max_count: int = 5) -> List:
 
 # -------------------- 节点3: 执行节点 --------------------
 def executor_node(state: AgentState) -> AgentState:
+    step_count = state.get("step_count", 0) + 1
+    budget = RuntimeBudget.from_config()
+    stop_reason = budget_exceeded({**state, "step_count": step_count}, budget)
+    if stop_reason:
+        record_trace(state, "budget_stop", "executor", {"reason": stop_reason, "step": step_count})
+        _emit_runtime_metrics(
+            state,
+            "executor",
+            step_count,
+            extra={"status": "stopped", "phase": "预算停止", "stop_reason": stop_reason},
+        )
+        return {
+            "stop_reason": stop_reason,
+            "messages": [AIMessage(content=f"[BudgetStop] {stop_reason}，将基于已有结果结束。")],
+            "step_count": step_count,
+        }
+
     plan = state.get("plan", {})
     subtasks = plan.get("subtasks", [])
     current_idx = plan.get("current_subtask", 1)
@@ -433,22 +615,33 @@ def executor_node(state: AgentState) -> AgentState:
         return state
 
     tool_iterations = state.get("tool_iterations", 0)
+    current_task = subtasks[current_idx - 1]
+
+    subtask_tool_limit = max(1, int(current_task.get("max_tool_calls") or MAX_TOOL_ITERATIONS))
+    effective_tool_limit = min(MAX_TOOL_ITERATIONS, subtask_tool_limit)
+    remaining_tool_calls = max(0, effective_tool_limit - tool_iterations)
+    tool_budget_exhausted = remaining_tool_calls == 0
 
     print("\n" + "-" * 40)
-    print(f"⚡ [Executor] 执行节点 —— 子任务 {current_idx}/{len(subtasks)} | 工具调用 #{tool_iterations + 1}")
+    print(
+        f"⚡ [Executor] 执行节点 —— 子任务 {current_idx}/{len(subtasks)} | "
+        f"工具预算 {tool_iterations}/{effective_tool_limit}"
+    )
     print("-" * 40)
 
-    if tool_iterations >= MAX_TOOL_ITERATIONS:
-        print(f"  ⚠ 断路器熔断! 已达上限 {MAX_TOOL_ITERATIONS} 次")
-        return {
-            "messages": [AIMessage(
-                content=f"[CircuitBreaker] 工具调用已达上限 ({MAX_TOOL_ITERATIONS}次)，"
-                        f"将基于已有结果继续。子任务: {subtasks[current_idx - 1].get('desc', '')}"
-            )]
-        }
-
-    current_task = subtasks[current_idx - 1]
     task_desc = current_task.get("desc", "")
+    record_trace(
+        state,
+        "node_start",
+        "executor",
+        {
+            "step": step_count,
+            "subtask_id": current_task.get("id"),
+            "subtask": task_desc[:500],
+            "tool_calls_used": tool_iterations,
+            "tool_calls_remaining": remaining_tool_calls,
+        },
+    )
 
     # 确定当前激活的技能 (排除 general_llm 占位符)
     active_skills = state.get("active_skills", [])
@@ -457,10 +650,40 @@ def executor_node(state: AgentState) -> AgentState:
 
     # 动态绑定工具: DEFAULT_TOOLS + 当前技能专属工具
     skill_tools = get_skill_tools(active_skill) if active_skill else []
-    all_tools = list(DEFAULT_TOOLS) + skill_tools
+    candidate_tools = list(DEFAULT_TOOLS) + skill_tools
+    tool_by_name = {tool.name: tool for tool in candidate_tools}
+    allowed_tool_names = allowed_tools_for_subtask(current_task, list(tool_by_name))
+    all_tools = [tool_by_name[name] for name in allowed_tool_names if name in tool_by_name]
+    if tool_budget_exhausted:
+        all_tools = []
+        record_trace(
+            state,
+            "tool_budget_exhausted",
+            "executor",
+            {
+                "subtask_id": current_task.get("id"),
+                "max_tool_calls": effective_tool_limit,
+                "action": "synthesize_existing_results",
+            },
+        )
     if skill_tools:
         print(f"  技能工具已加载: {[t.name for t in skill_tools]}")
-    model_with_tools = chat_model.bind_tools(all_tools)
+    print(f"  工具策略: {current_task.get('task_type', 'general')}/{current_task.get('risk_level', 'low')} → {allowed_tool_names or ['无工具']}")
+    record_trace(
+        state,
+        "executor_tool_policy",
+        "executor",
+        {
+            "subtask_id": current_task.get("id"),
+            "task_type": current_task.get("task_type", "general"),
+            "risk_level": current_task.get("risk_level", "low"),
+            "allowed_tools": allowed_tool_names,
+            "max_tool_calls": effective_tool_limit,
+            "tool_calls_used": tool_iterations,
+            "tool_calls_remaining": remaining_tool_calls,
+        },
+    )
+    model_with_tools = chat_model.bind_tools(all_tools) if all_tools else chat_model
 
     memory_ctx = state.get("memory_context", "")
     system_prompt = _get_system_prompt("executor")
@@ -505,8 +728,20 @@ def executor_node(state: AgentState) -> AgentState:
 
     system_prompt += (
         f"\n\n当前子任务: {task_desc}\n"
-        f"请专注于完成这个子任务，完成后给出明确的执行结果。"
+        f"任务类型: {current_task.get('task_type', 'general')}\n"
+        f"风险等级: {current_task.get('risk_level', 'low')}\n"
+        f"预期结果: {current_task.get('expected_result') or '未提供'}\n"
+        f"验收检查: {current_task.get('acceptance_checks', [])}\n"
+        f"本子任务允许使用的工具: {allowed_tool_names or ['无工具，仅用模型回答']}\n"
+        f"本子任务最多调用工具 {effective_tool_limit} 次，已调用 {tool_iterations} 次，"
+        f"剩余 {remaining_tool_calls} 次。\n"
+        f"请专注于完成这个子任务；如果没有允许的工具，不要声称已经执行外部操作。完成后给出明确的执行结果和证据。"
     )
+    if tool_budget_exhausted:
+        system_prompt += (
+            "\n工具预算已经用尽。请读取对话中已有的工具返回结果，直接整理当前子任务的结果和证据；"
+            "不要再次请求工具，也不要把预算用尽视为任务失败。"
+        )
 
     messages = [SystemMessage(content=system_prompt)]
     if memory_ctx:
@@ -515,24 +750,124 @@ def executor_node(state: AgentState) -> AgentState:
 
     try:
         response = model_with_tools.invoke(messages)
+        token_count = state.get("token_count", 0) + message_token_usage(response)
     except Exception as e:
         print(f"  ❌ LLM 调用出错: {e}")
         response = AIMessage(content=f"执行出错: {str(e)}")
+        token_count = state.get("token_count", 0)
+
+    requested_tool_calls = list(getattr(response, "tool_calls", []) or [])
+    if len(requested_tool_calls) > remaining_tool_calls:
+        trimmed_calls = requested_tool_calls[:remaining_tool_calls]
+        record_trace(
+            state,
+            "tool_budget_trimmed",
+            "executor",
+            {
+                "subtask_id": current_task.get("id"),
+                "requested": len(requested_tool_calls),
+                "accepted": len(trimmed_calls),
+                "max_tool_calls": effective_tool_limit,
+            },
+        )
+        response = AIMessage(content=response.content or "", tool_calls=trimmed_calls)
 
     if hasattr(response, "tool_calls") and response.tool_calls:
+        recent_tool_calls = list(state.get("recent_tool_calls", []))
+        repeated_signatures: List[str] = []
+        policy_violations = detect_tool_policy_violations(response.tool_calls, allowed_tool_names)
+        if policy_violations:
+            stop_reason = "tool policy violation"
+            record_trace(
+                state,
+                "tool_policy_violation",
+                "executor",
+                {
+                    "subtask_id": current_task.get("id"),
+                    "violations": policy_violations,
+                    "allowed_tools": allowed_tool_names,
+                },
+            )
+            console.emit_log("Executor", f"工具越权: {policy_violations}")
+            return {
+                "messages": [AIMessage(content=f"[ToolPolicy] 当前子任务不允许调用这些工具: {policy_violations}")],
+                "tool_iterations": tool_iterations + len(response.tool_calls),
+                "recent_tool_calls": recent_tool_calls,
+                "step_count": step_count,
+                "token_count": token_count,
+                "stop_reason": stop_reason,
+            }
         for tc in response.tool_calls:
             args_str = str(tc.get('args', {}))[:150]
+            signature = f"{tc.get('name')}:{tc.get('args', {})}"
+            recent_tool_calls.append(signature)
+            if recent_tool_calls.count(signature) >= 3:
+                repeated_signatures.append(signature)
             print(f"  🔧 调用工具: {tc['name']}({args_str})")
             console.emit_tool(tc['name'], args_str)
+            record_trace(
+                state,
+                "tool_call_requested",
+                "executor",
+                {
+                    "subtask_id": current_task.get("id"),
+                    "tool": tc.get("name"),
+                    "args": tc.get("args", {}),
+                },
+            )
+        recent_tool_calls = recent_tool_calls[-12:]
+        if repeated_signatures:
+            stop_reason = "repeated tool call detected"
+            record_trace(
+                state,
+                "loop_detected",
+                "executor",
+                {
+                    "subtask_id": current_task.get("id"),
+                    "repeated_signatures": repeated_signatures,
+                },
+            )
+            _emit_runtime_metrics(
+                state,
+                "executor",
+                step_count,
+                token_count,
+                {"status": "stopped", "phase": "检测到重复工具调用", "stop_reason": stop_reason},
+            )
+            return {
+                "messages": [AIMessage(content=f"[LoopGuard] 检测到重复工具调用，已停止继续调用工具: {repeated_signatures[0][:160]}")],
+                "tool_iterations": tool_iterations + len(response.tool_calls),
+                "recent_tool_calls": recent_tool_calls,
+                "step_count": step_count,
+                "token_count": token_count,
+                "stop_reason": stop_reason,
+            }
     else:
+        recent_tool_calls = list(state.get("recent_tool_calls", []))
         print(f"  💬 LLM 回复: {response.content[:100]}...")
         console.emit_log("Executor", f"LLM 回复: {response.content[:150]}")
+        record_trace(
+            state,
+            "model_observation",
+            "executor",
+            {"subtask_id": current_task.get("id"), "content": response.content[:1000]},
+        )
 
     agent_memory.set_working(f"subtask_{current_idx}_result", response.content)
+    _emit_runtime_metrics(
+        state,
+        "executor",
+        step_count,
+        token_count,
+        {"status": "running", "phase": f"执行子任务 {current_idx}/{len(subtasks)}"},
+    )
 
     return {
         "messages": [response],
-        "tool_iterations": tool_iterations + 1,
+        "tool_iterations": tool_iterations + len(getattr(response, "tool_calls", []) or []),
+        "step_count": step_count,
+        "token_count": token_count,
+        "recent_tool_calls": recent_tool_calls,
         "_active_skill_tools": skill_tools,
     }
 
@@ -554,6 +889,7 @@ tool_executor_node = ToolNode(ALL_TOOLS)
 
 # -------------------- 节点5: 反思节点 --------------------
 def reflection_node(state: AgentState) -> AgentState:
+    step_count = state.get("step_count", 0) + 1
     plan = state.get("plan", {})
     subtasks = plan.get("subtasks", [])
     current_idx = plan.get("current_subtask", 1)
@@ -563,6 +899,12 @@ def reflection_node(state: AgentState) -> AgentState:
 
     current_task = subtasks[current_idx - 1]
     task_desc = current_task.get("desc", "")
+    record_trace(
+        state,
+        "node_start",
+        "reflection",
+        {"step": step_count, "subtask_id": current_task.get("id"), "desc": task_desc[:500]},
+    )
 
     recent_msgs = state["messages"][-3:]
     result_text = "\n".join([
@@ -573,6 +915,7 @@ def reflection_node(state: AgentState) -> AgentState:
     critic_prompt = (
         f"评审以下子任务的执行结果：\n\n"
         f"子任务: {task_desc}\n"
+        f"预期结果: {current_task.get('expected_result') or '未提供'}\n"
         f"执行结果: {result_text}\n\n"
         f"请回答：1) 结果是否满足子任务要求？(是/否)\n"
         f"2) 如果不足，需要如何改进？\n"
@@ -585,43 +928,79 @@ def reflection_node(state: AgentState) -> AgentState:
     print("-" * 40)
 
     try:
-        critic_response = chat_model.invoke(critic_prompt).content.strip()
+        critic_msg = chat_model.invoke(critic_prompt)
+        critic_response = critic_msg.content.strip()
+        token_count = state.get("token_count", 0) + message_token_usage(critic_msg)
     except Exception:
         critic_response = "完成"
+        token_count = state.get("token_count", 0)
 
     print(f"  Critic 评审: {critic_response[:100]}...")
 
     subtask_retries = state.get("subtask_retries", 0)
+    has_tool_evidence = any(getattr(message, "type", "") == "tool" for message in recent_msgs)
+    verifier = verify_subtask_result(
+        current_task,
+        result_text,
+        state.get("stop_reason", ""),
+        has_tool_evidence=has_tool_evidence,
+    )
+    if verifier.get("issues"):
+        print(f"  Verifier: {verifier['status']} | {verifier['issues']}")
+        console.emit_log("Verifier", f"子任务 {current_idx}: {verifier['status']} | {', '.join(verifier['issues'])}")
 
-    if "需要重试" in critic_response:
-        if subtask_retries >= MAX_SUBTASK_RETRIES:
-            status = "completed"
-            critic_response = f"[已达最大重试次数 {MAX_SUBTASK_RETRIES}] " + critic_response
+    if verifier["status"] == "adjust" or "需要调整" in critic_response:
+        if should_replan(plan, current_task, verifier, subtask_retries, MAX_SUBTASK_RETRIES):
+            status = "adjust"
+            subtask_retries += 1
         else:
             status = "retry"
             subtask_retries += 1
-    elif "需要调整" in critic_response:
+    elif verifier["status"] == "retry" or "需要重试" in critic_response:
         if subtask_retries >= MAX_SUBTASK_RETRIES:
-            status = "completed"
-            critic_response = f"[已达最大重试次数 {MAX_SUBTASK_RETRIES}] " + critic_response
-        else:
             status = "adjust"
+            critic_response = f"[触发局部重规划: 已重试 {subtask_retries} 次] " + critic_response
+        else:
+            status = "retry"
             subtask_retries += 1
     else:
         status = "completed"
         subtask_retries = 0
 
+    if verifier.get("issues"):
+        critic_response = f"[Verifier: {verifier['status']}; {'; '.join(verifier['issues'])}] {critic_response}"
     current_task["status"] = status
     current_task["result"] = result_text[:500]
     current_task["critique"] = critic_response[:300]
+    current_task["verifier"] = verifier
+    current_task["retry_count"] = subtask_retries
+    if status == "failed":
+        current_task["error"] = critic_response[:300]
+    plan = update_plan_after_subtask(plan)
 
     print(f"  判定: {status} | 重试次数: {subtask_retries}/{MAX_SUBTASK_RETRIES}")
     console.emit_log("Reflection", f"子任务 {current_idx} 评审: {status} (重试: {subtask_retries}/{MAX_SUBTASK_RETRIES})")
 
-    if status == "completed":
-        plan["current_subtask"] = current_idx + 1
-        print(f"  ✅ 子任务完成，推进到子任务 {plan['current_subtask']}")
-        console.emit_log("Reflection", f"子任务 {current_idx} 完成，推进到 {plan['current_subtask']}")
+    if status in ("completed", "failed"):
+        print(f"  ✅ 子任务结束，推进到子任务 {plan['current_subtask']}")
+        console.emit_log("Reflection", f"子任务 {current_idx} 结束，推进到 {plan['current_subtask']}")
+
+    record_trace(
+        state,
+        "subtask_reviewed",
+        "reflection",
+        {
+            "subtask_id": current_task.get("id"),
+            "status": status,
+            "retry_count": subtask_retries,
+            "critique": critic_response[:500],
+            "verifier": verifier,
+            "ready_subtasks": plan.get("ready_subtasks", []),
+            "state_graph": plan.get("state_graph", {}),
+        },
+    )
+    if state.get("trace_enabled", True):
+        trace_store.record_plan(state["run_id"], plan)
 
     is_success = status == "completed"
     agent_memory.save_episodic(
@@ -637,18 +1016,35 @@ def reflection_node(state: AgentState) -> AgentState:
         f"[Review] **子任务 {current_idx} 评审**: {status}\n"
         f"  评审意见: {critic_response[:200]}"
     )
+    _emit_runtime_metrics(
+        {**state, "plan": plan},
+        "reflection",
+        step_count,
+        token_count,
+        {"status": "running", "phase": f"评审子任务 {current_idx}: {status}"},
+    )
 
     return {
         "plan": plan,
         "subtask_retries": subtask_retries,
-        "messages": [AIMessage(content=reflection_msg)]
+        "messages": [AIMessage(content=reflection_msg)],
+        "step_count": step_count,
+        "token_count": token_count,
     }
 
 
 # -------------------- 节点6: 多 Agent 协作节点 --------------------
 def collaboration_node(state: AgentState) -> AgentState:
+    step_count = state.get("step_count", 0) + 1
+    token_count = state.get("token_count", 0)
     plan = state.get("plan", {})
     collaboration_log = state.get("collaboration_log", [])
+    record_trace(
+        state,
+        "node_start",
+        "collaboration",
+        {"step": step_count, "plan_id": plan.get("plan_id"), "version": plan.get("version")},
+    )
 
     print("\n" + "=" * 60)
     print("🤝 [Collaboration] 协作节点 —— 多 Agent 协调")
@@ -657,7 +1053,8 @@ def collaboration_node(state: AgentState) -> AgentState:
     if plan.get("complexity") == "simple":
         print("  复杂度: simple，跳过协作")
         collaboration_log.append("[Coordinator] 任务简单，无需多 Agent 协作")
-        return {"collaboration_log": collaboration_log}
+        _emit_runtime_metrics(state, "collaboration", step_count, token_count, {"status": "running", "phase": "跳过协作"})
+        return {"collaboration_log": collaboration_log, "step_count": step_count, "token_count": token_count}
 
     print(f"  复杂度: {plan.get('complexity')}，启动多 Agent 协作")
 
@@ -682,6 +1079,7 @@ def collaboration_node(state: AgentState) -> AgentState:
                 HumanMessage(content=f"请检索以下相关信息: {plan_goal}")
             ]
             research_response = research_model.invoke(research_messages)
+            token_count += message_token_usage(research_response)
             print(f"  [Researcher → Coordinator] 检索完成: {research_response.content[:80]}...")
             collaboration_log.append(
                 f"[Researcher → Coordinator] 检索完成: {research_response.content[:200]}..."
@@ -716,6 +1114,7 @@ def collaboration_node(state: AgentState) -> AgentState:
             ))
         ]
         critic_response = critic_model.invoke(critic_messages)
+        token_count += message_token_usage(critic_response)
         print(f"  [Critic → Coordinator] 评审完成: {critic_response.content[:80]}...")
         collaboration_log.append(
             f"[Critic → Coordinator] 评审完成: {critic_response.content[:200]}..."
@@ -735,18 +1134,31 @@ def collaboration_node(state: AgentState) -> AgentState:
         "[Collab] **多 Agent 协作摘要**\n" +
         "\n".join(f"  {p}" for p in summary_parts)
     )
+    _emit_runtime_metrics(
+        state,
+        "collaboration",
+        step_count,
+        token_count,
+        {"status": "running", "phase": "多 Agent 协作完成"},
+    )
 
     return {
         "collaboration_log": collaboration_log,
-        "messages": [AIMessage(content=summary_msg)]
+        "messages": [AIMessage(content=summary_msg)],
+        "step_count": step_count,
+        "token_count": token_count,
     }
 
 
 # -------------------- 节点7: 汇总输出节点 --------------------
 def finalize_node(state: AgentState) -> AgentState:
+    step_count = state.get("step_count", 0) + 1
+    token_count = state.get("token_count", 0)
     plan = state.get("plan", {})
     subtasks = plan.get("subtasks", [])
 
+    completed_count = sum(1 for st in subtasks if st.get("status") == "completed")
+    failed_count = sum(1 for st in subtasks if st.get("status") == "failed")
     results_parts = []
     for st in subtasks:
         if st.get("result"):
@@ -755,8 +1167,14 @@ def finalize_node(state: AgentState) -> AgentState:
     print("\n" + "=" * 60)
     print("📦 [Finalize] 汇总节点 —— 整合所有子任务结果，注入人格")
     print("=" * 60)
-    print(f"  子任务完成数: {len(results_parts)}/{len(subtasks)}")
-    console.emit_log("Finalize", f"汇总 {len(results_parts)}/{len(subtasks)} 个子任务结果")
+    print(f"  子任务完成数: {completed_count}/{len(subtasks)}")
+    console.emit_log("Finalize", f"汇总 {completed_count}/{len(subtasks)} 个已完成子任务")
+    record_trace(
+        state,
+        "node_start",
+        "finalize",
+        {"step": step_count, "completed": completed_count, "total": len(subtasks), "stop_reason": state.get("stop_reason", "")},
+    )
 
     all_results = "\n\n".join(results_parts) if results_parts else "任务已直接完成"
 
@@ -774,24 +1192,63 @@ def finalize_node(state: AgentState) -> AgentState:
 
     try:
         final_response = chat_model.invoke(summarize_prompt)
+        token_count += message_token_usage(final_response)
         final_text = final_response.content
         print(f"  最终回答: {final_text[:100]}...")
     except Exception:
         final_text = all_results
         print(f"  ⚠ LLM 调用失败，使用原始结果")
 
-    is_success = len(results_parts) > 0
+    stop_reason = state.get("stop_reason", "")
+    if failed_count:
+        terminal_status = "failed"
+    elif stop_reason or completed_count < len(subtasks):
+        terminal_status = "stopped"
+    else:
+        terminal_status = "completed"
+    is_success = terminal_status == "completed"
     agent_memory.learn_from_interaction(
         user_input=user_request,
         agent_response=final_text[:500],
         success=is_success
     )
 
+    metrics = {
+        "total_subtasks": len(subtasks),
+        "completed_subtasks": completed_count,
+        "failed_subtasks": failed_count,
+        "step_count": step_count,
+        "token_count": token_count,
+        "tool_calls": sum(1 for msg in state.get("messages", []) if hasattr(msg, "tool_call_id")),
+        "stop_reason": stop_reason,
+    }
+    record_trace(state, "run_finalized", "finalize", {"final_output": final_text[:1000], "metrics": metrics})
+    if state.get("trace_enabled", True):
+        trace_store.finish_run(
+            state["run_id"],
+            terminal_status,
+            final_text,
+            metrics,
+        )
+
     agent_memory.clear_working()
+    _emit_runtime_metrics(
+        state,
+        "finalize",
+        step_count,
+        token_count,
+        {
+            "status": terminal_status,
+            "phase": "任务完成" if terminal_status == "completed" else "任务未完整完成",
+            **metrics,
+        },
+    )
 
     return {
         "final_output": final_text,
-        "messages": [AIMessage(content=final_text)]
+        "messages": [AIMessage(content=final_text)],
+        "step_count": step_count,
+        "token_count": token_count,
     }
 
 
@@ -799,11 +1256,14 @@ def finalize_node(state: AgentState) -> AgentState:
 # 路由函数
 # ====================================================================
 
-def should_continue_tools(state: AgentState) -> Literal["tools", "reflect"]:
+def should_continue_tools(state: AgentState) -> Literal["tools", "reflect", "finalize"]:
+    if state.get("stop_reason"):
+        print("  ⏩ 路由: executor → finalize (预算终止)")
+        return "finalize"
     last_msg = state["messages"][-1]
     tool_iterations = state.get("tool_iterations", 0)
-    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls and tool_iterations < MAX_TOOL_ITERATIONS:
-        print(f"  ⏩ 路由: executor → tools (第 {tool_iterations + 1} 次工具调用)")
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        print(f"  ⏩ 路由: executor → tools (累计 {tool_iterations} 次工具调用)")
         return "tools"
     print(f"  ⏩ 路由: executor → reflection")
     return "reflect"
@@ -812,7 +1272,9 @@ def should_continue_tools(state: AgentState) -> Literal["tools", "reflect"]:
 def should_continue_plan(state: AgentState) -> Literal["skill_select", "finalize"]:
     plan = state.get("plan", {})
     subtasks = plan.get("subtasks", [])
-    current_idx = plan.get("current_subtask", 1)
+    plan["ready_subtasks"] = get_ready_subtasks(plan)
+    current_idx = get_next_subtask_index(plan) or plan.get("current_subtask", 1)
+    plan["current_subtask"] = current_idx
 
     if not subtasks or current_idx > len(subtasks):
         print("  ⏩ 路由: collaboration → finalize (无子任务)")
@@ -832,10 +1294,15 @@ def should_continue_plan(state: AgentState) -> Literal["skill_select", "finalize
 def decide_after_reflection(state: AgentState) -> Literal["planning", "skill_select", "finalize"]:
     plan = state.get("plan", {})
     subtasks = plan.get("subtasks", [])
-    current_idx = plan.get("current_subtask", 1)
+    plan["ready_subtasks"] = get_ready_subtasks(plan)
+    current_idx = get_next_subtask_index(plan) or plan.get("current_subtask", 1)
+    plan["current_subtask"] = current_idx
 
     if not subtasks or current_idx > len(subtasks):
         print("  ⏩ 路由: reflection → finalize (全部子任务完成)")
+        return "finalize"
+    if not plan.get("ready_subtasks"):
+        print("  ⏩ 路由: reflection → finalize (无可执行子任务)")
         return "finalize"
     current_task = subtasks[current_idx - 1]
     if current_task.get("status") == "adjust":
@@ -874,7 +1341,7 @@ agent_workflow.add_edge("skill_select", "executor")
 agent_workflow.add_conditional_edges(
     "executor",
     should_continue_tools,
-    {"tools": "tools", "reflect": "reflection"}
+    {"tools": "tools", "reflect": "reflection", "finalize": "finalize"}
 )
 
 agent_workflow.add_edge("tools", "executor")
@@ -894,11 +1361,36 @@ agent_graph = agent_workflow.compile()
 # 对外接口
 # ====================================================================
 
-def run_agent(messages: List) -> str:
+def run_agent(messages: List, session_id: str = "default") -> str:
     print("\n" + "█" * 60)
     print("█  Agent 系统启动")
     print("█" * 60)
     print(f"  输入消息数: {len(messages)}")
+    budget = RuntimeBudget.from_config()
+    run_id = new_run_id()
+    goal = ""
+    if messages:
+        last = messages[-1]
+        goal = last.content if hasattr(last, "content") else str(last)
+    if budget.trace_enabled:
+        trace_store.start_run(run_id, session_id, goal)
+    console.emit_metrics(
+        session_id,
+        run_id,
+        "runtime",
+        {
+            "status": "running",
+            "phase": "任务启动",
+            "step_count": 0,
+            "token_count": 0,
+            "elapsed_seconds": 0,
+            "total_subtasks": 0,
+            "completed_subtasks": 0,
+            "failed_subtasks": 0,
+            "current_subtask": 0,
+            "stop_reason": "",
+        },
+    )
 
     initial_state = {
         "messages": messages,
@@ -908,13 +1400,55 @@ def run_agent(messages: List) -> str:
         "active_skills": [],
         "final_output": "",
         "tool_iterations": 0,
-        "subtask_retries": 0
+        "subtask_retries": 0,
+        "session_id": session_id,
+        "run_id": run_id,
+        "started_at": time.time(),
+        "step_count": 0,
+        "token_count": 0,
+        "trace_enabled": budget.trace_enabled,
+        "stop_reason": "",
+        "recent_tool_calls": [],
     }
-
-    result = agent_graph.invoke(
+    record_trace(
         initial_state,
-        config={"recursion_limit": 100}
+        "run_started",
+        "runtime",
+        {
+            "session_id": session_id,
+            "run_id": run_id,
+            "budget": {
+                "max_steps": budget.max_steps,
+                "max_runtime_seconds": budget.max_runtime_seconds,
+                "max_tokens": budget.max_tokens,
+                "planner_enabled": budget.planner_enabled,
+                "planner_parallelism": budget.planner_parallelism,
+            },
+        },
     )
+
+    try:
+        result = agent_graph.invoke(
+            initial_state,
+            config={"recursion_limit": max(20, budget.max_steps * 4)}
+        )
+    except Exception as e:
+        if budget.trace_enabled:
+            trace_store.finish_run(run_id, "failed", str(e), {"error": str(e)})
+        console.emit_metrics(
+            session_id,
+            run_id,
+            "runtime",
+            {
+                "status": "failed",
+                "phase": "任务失败",
+                "step_count": 0,
+                "token_count": 0,
+                "elapsed_seconds": max(0, round(time.time() - initial_state["started_at"], 1)),
+                "stop_reason": str(e),
+            },
+        )
+        raise
 
     final = result.get("final_output", "") or "抱歉，我没有处理好你的请求喵~"
     print(f"\n{'█' * 60}")

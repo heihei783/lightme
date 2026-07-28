@@ -7,7 +7,8 @@
     <title>LightMe AI 终端</title>
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🤖</text></svg>">
-    <link rel="stylesheet" href="../css/index.css">
+    <link rel="stylesheet" href="../css/index.css?v=20260728d">
+    <link rel="stylesheet" href="../css/workbench.css?v=20260728d">
     <script>const API_BASE = 'http://127.0.0.1:8000';</script>
     <script src="../js/live2d-sdk.js"></script>
     <script src="../js/LAppDefine.js"></script>
@@ -17,8 +18,16 @@
     <div class="container">
         <div class="sidebar">
             <div class="sidebar-header">
-                <button id="new-chat-btn">+ 新建对话</button>
+                <div class="brand-lockup" aria-label="LightMe Agent Workspace">
+                    <span class="brand-mark">LM</span>
+                    <span>
+                        <strong>LightMe</strong>
+                        <small>Agent Workspace</small>
+                    </span>
+                </div>
+                <button id="new-chat-btn"><span aria-hidden="true">+</span> 新建任务</button>
             </div>
+            <div class="sidebar-label">最近任务</div>
             <div id="session-list" class="session-list"></div>
         </div>
 
@@ -40,7 +49,10 @@
 
         <div class="chat-side">
             <div class="header">
-                <h2 id="current-title">LightMe System</h2>
+                <div class="header-title">
+                    <span class="header-eyebrow">ACTIVE SESSION</span>
+                    <h2 id="current-title">LightMe System</h2>
+                </div>
                 <div class="header-right">
                     <select id="tts-voice-select" title="切换TTS语音" class="header-select"></select>
                     <button id="tts-mute-btn" title="关闭语音">
@@ -49,12 +61,36 @@
                     <button id="companion-btn" title="AI 陪伴 - 截图给 AI 看看你的屏幕">
                         <img src="/images/视觉设置.png" alt="AI 陪伴">
                     </button>
+                    <button id="desktop-pet-btn" title="启动桌面宠物">桌宠</button>
                     <button id="tools-btn" title="工具 & 技能">🛠</button>
+                    <button id="workflow-btn" title="Planner-Executor 工作流" onclick="window.location.href='workflow.html'">流程</button>
                     <button id="term-btn" title="Agent 终端" onclick="openTerminal()">
                         <img src="/images/terminal-line.png" alt="Agent 终端">
                     </button>
                     <button id="config-btn" title="AI 配置" onclick="window.location.href='config_ai.html'">⚙️</button>
                     <span class="status-dot"></span>
+                </div>
+            </div>
+
+            <div id="task-meter" class="task-meter idle" style="display:none;">
+                <div class="task-meter-main">
+                    <div class="task-meter-state">
+                        <span id="task-meter-dot" class="task-meter-dot"></span>
+                        <span id="task-meter-phase">空闲</span>
+                    </div>
+                    <div id="task-phase-track" class="task-phase-track">
+                        <span data-node="planning">规划</span>
+                        <span data-node="skill_select">技能</span>
+                        <span data-node="executor">执行</span>
+                        <span data-node="reflection">评审</span>
+                        <span data-node="finalize">汇总</span>
+                    </div>
+                </div>
+                <div class="task-meter-stats">
+                    <span><b id="task-elapsed">0.0s</b><small>耗时</small></span>
+                    <span><b id="task-tokens">0</b><small>tokens</small></span>
+                    <span><b id="task-steps">0</b><small>steps</small></span>
+                    <span><b id="task-progress">0/0</b><small>子任务</small></span>
                 </div>
             </div>
 
@@ -75,8 +111,39 @@
         </div>
     </div>
 
-    <!-- 隐藏的头像上传 input -->
-    <input type="file" id="avatar-file-input" accept="image/*" style="display:none;">
+    <input type="file" id="avatar-file-input" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none;">
+
+    <div id="avatar-modal-overlay" class="modal-overlay" style="display:none;">
+        <div class="modal-panel avatar-modal-panel" role="dialog" aria-modal="true" aria-labelledby="avatar-modal-title">
+            <div class="modal-header">
+                <div class="avatar-modal-heading">
+                    <span id="avatar-modal-kind">PROFILE IMAGE</span>
+                    <h3 id="avatar-modal-title">用户头像</h3>
+                </div>
+                <button id="avatar-modal-close" class="modal-close-btn" type="button" title="关闭">&times;</button>
+            </div>
+            <div class="modal-body avatar-modal-body">
+                <div id="avatar-preview-stage" class="avatar-preview-stage">
+                    <img id="avatar-preview-image" alt="头像预览" decoding="async">
+                    <div id="avatar-preview-empty" class="avatar-preview-empty">暂无头像</div>
+                    <span id="avatar-quality-badge" class="avatar-quality-badge">CURRENT</span>
+                </div>
+                <div class="avatar-preview-info">
+                    <strong id="avatar-preview-name">当前头像</strong>
+                    <span id="avatar-preview-meta">等待图片信息</span>
+                    <span id="avatar-upload-status" role="status"></span>
+                </div>
+                <div class="avatar-modal-actions">
+                    <button id="avatar-select-btn" class="avatar-secondary-btn" type="button">
+                        <img src="/images/图片.png" alt="">选择图片
+                    </button>
+                    <button id="avatar-apply-btn" class="avatar-primary-btn" type="button" disabled>
+                        <img src="/images/执行确认.png" alt="">应用头像
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Shell 命令审批弹窗 -->
     <div id="shell-approval-overlay" class="modal-overlay" style="display:none;">
@@ -117,7 +184,7 @@
     </div>
 
     <script src="../js/live2d-ctrl.js"></script>
-    <script src="../js/index.js"></script>
+    <script src="../js/index.js?v=20260728d"></script>
 </body>
 
 </html>

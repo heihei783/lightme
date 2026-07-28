@@ -58,6 +58,7 @@ class MainState(TypedDict):
     messages: Annotated[List, add_messages]
     route: str
     context: str
+    session_id: str
 
 
 # ====================================================================
@@ -251,7 +252,7 @@ def agent_node(state: MainState) -> MainState:
     # 调用增强 Agent，传入当前对话消息
     # run_agent 内部执行完整的 规划→协作→执行→反思→汇总 流程
     # 只返回最终汇总结果，中间过程消息不对外暴露
-    final_output = run_agent(state["messages"])
+    final_output = run_agent(state["messages"], session_id=state.get("session_id", "default"))
     return {"messages": [AIMessage(content=final_output)]}
 
 
@@ -356,7 +357,7 @@ def chat_loop(session_id: str, question: str, image_b64: str | None = None):
         else:
             # 普通模式：token 级别流式输出（stream_mode="messages"）
             for msg_chunk, metadata in main_graph.stream(
-                {"messages": input_messages},
+                {"messages": input_messages, "session_id": session_id},
                 stream_mode="messages",
                 config={"recursion_limit": 150}
             ):

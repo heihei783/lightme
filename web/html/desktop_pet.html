@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LightMe 桌面宠物</title>
+    <link rel="stylesheet" href="../css/desktop_pet.css">
+    <script>const API_BASE = 'http://127.0.0.1:8000';</script>
+    <script src="../js/live2d-sdk.js"></script>
+    <script src="../js/LAppDefine.js"></script>
+</head>
+
+<body>
+    <div class="pet-shell">
+        <div class="pet-toolbar">
+            <button id="pet-char-btn" title="切换角色">切换</button>
+            <button id="pet-close-btn" title="关闭">关闭</button>
+        </div>
+        <canvas id="live2d-canvas" data-model-width="360" data-model-height="540"></canvas>
+        <div id="live2d-msg-box" class="live2d-msg-box"></div>
+    </div>
+
+    <script src="../js/live2d-ctrl.js"></script>
+    <script src="../js/desktop_pet.js"></script>
+</body>
+
+</html>

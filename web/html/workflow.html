@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planner-Executor 工作流地图</title>
+    <link rel="stylesheet" href="../css/workflow.css">
+    <script>const API_BASE = 'http://127.0.0.1:8000';</script>
+</head>
+
+<body>
+    <div class="workflow-page">
+        <header class="workflow-header">
+            <div class="workflow-brand">
+                <a class="back-link" href="index.html" aria-label="返回聊天">←</a>
+                <span class="brand-mark">LM</span>
+                <div>
+                    <div class="workflow-kicker">AGENT CONTROL PLANE</div>
+                    <h1>Planner-Executor</h1>
+                </div>
+            </div>
+            <div class="workflow-actions">
+                <a id="terminal-link" class="terminal-link" href="terminal.html">打开 Trace</a>
+                <button id="live-btn" class="live-btn active" type="button" aria-pressed="true">
+                    <span class="live-dot" aria-hidden="true"></span>
+                    实时
+                </button>
+                <button id="refresh-btn" type="button" title="刷新数据" aria-label="刷新数据">↻</button>
+            </div>
+        </header>
+
+        <section class="runtime-overview" aria-label="运行概览">
+            <div class="overview-lead">
+                <div class="overview-status-row">
+                    <span id="system-indicator" class="system-indicator"></span>
+                    <span id="workflow-status">正在连接 Agent Runtime</span>
+                </div>
+                <p id="workflow-subtitle">查看任务如何被拆解、执行、验证和重新规划。</p>
+            </div>
+            <div class="overview-metrics">
+                <div class="metric-item">
+                    <span>最近运行</span>
+                    <strong id="metric-runs">0</strong>
+                </div>
+                <div class="metric-item">
+                    <span>成功率</span>
+                    <strong id="metric-success">--</strong>
+                </div>
+                <div class="metric-item">
+                    <span>步骤预算</span>
+                    <strong id="metric-steps">--</strong>
+                </div>
+                <div class="metric-item">
+                    <span>并行度</span>
+                    <strong id="metric-parallel">--</strong>
+                </div>
+            </div>
+        </section>
+
+        <main class="workflow-layout">
+            <div class="workflow-primary">
+                <section class="workflow-map" aria-label="工作流地图">
+                    <div class="map-header">
+                        <div>
+                            <span class="section-kicker">SYSTEM GRAPH</span>
+                            <h2>执行拓扑</h2>
+                        </div>
+                        <div class="map-toolbar" aria-label="地图视图控制">
+                            <button class="filter-btn active" type="button" data-filter="all">全部</button>
+                            <button class="filter-btn" type="button" data-filter="core">主链路</button>
+                            <button class="filter-btn" type="button" data-filter="skill">Skills</button>
+                            <button class="filter-btn" type="button" data-filter="tool">Tools</button>
+                        </div>
+                    </div>
+                    <div class="map-viewport">
+                        <div id="map-canvas" class="map-canvas">
+                            <svg id="edge-layer" class="edge-layer" aria-hidden="true"></svg>
+                            <div id="node-layer" class="node-layer"></div>
+                        </div>
+                    </div>
+                    <div class="map-footer">
+                        <span><i class="legend-dot core-dot"></i>核心链路</span>
+                        <span><i class="legend-dot capability-dot"></i>能力调用</span>
+                        <span><i class="legend-dot trace-dot"></i>审计链路</span>
+                        <small>拖拽节点可自定义布局</small>
+                    </div>
+                </section>
+
+                <section class="plan-panel" aria-label="当前计划">
+                    <div class="panel-heading">
+                        <div>
+                            <span class="section-kicker">PLAN STATE</span>
+                            <h2>计划与子任务</h2>
+                        </div>
+                        <div id="plan-versions" class="plan-versions"></div>
+                    </div>
+                    <div id="plan-summary" class="plan-summary"></div>
+                    <div id="subtask-list" class="subtask-list"></div>
+                </section>
+            </div>
+
+            <aside class="workflow-sidebar">
+                <section class="detail-panel" aria-label="节点详情">
+                    <div class="detail-kicker" id="detail-type">当前节点</div>
+                    <h2 id="detail-title">选择一个节点</h2>
+                    <p id="detail-desc">点击地图中的节点，查看它的职责、运行状态和连接关系。</p>
+                    <dl id="detail-meta" class="detail-meta"></dl>
+                    <div id="detail-links" class="detail-links"></div>
+                </section>
+
+                <section class="runs-panel" aria-label="最近运行">
+                    <div class="panel-heading compact">
+                        <div>
+                            <span class="section-kicker">RUN HISTORY</span>
+                            <h2>最近运行</h2>
+                        </div>
+                        <span id="runs-count" class="runs-count">0</span>
+                    </div>
+                    <div id="runs-list" class="runs-list"></div>
+                </section>
+            </aside>
+        </main>
+    </div>
+
+    <script src="../js/workflow.js"></script>
+</body>
+
+</html>

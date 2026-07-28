@@ -5,7 +5,7 @@ Skill 加载器 —— Markdown 技能定义的加载、解析与匹配
 技能 .md 文件放在 app/agent/skills/ 目录下，系统启动时自动扫描加载。
 每个 .md 文件定义一套工作流指南，告诉 LLM 如何组合已有工具完成任务。
 
-格式：
+LightMe 原生格式：
   # Skill: <name>
   ## Description
   ...
@@ -17,12 +17,22 @@ Skill 加载器 —— Markdown 技能定义的加载、解析与匹配
   1. Step one...
   ## Notes
   ...
+
+Claude Code 兼容格式：
+  .claude/skills/<skill-name>/SKILL.md
+  ---
+  name: <name>
+  description: ...
+  ---
+  # Instructions...
 """
 
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+import yaml
 
 
 # ====================================================================
@@ -39,6 +49,8 @@ class SkillDef:
     instructions: str = ""
     notes: str = ""
     source_file: str = ""
+    source_dir: str = ""
+    source_format: str = "lightme"
     tool_module: str = ""  # 技能的 Python 工具模块路径，如 "app.agent.skill_code.firecrawl"
 
     def to_dict(self) -> Dict:
@@ -48,6 +60,9 @@ class SkillDef:
             "keywords": self.keywords,
             "category": self.category,
             "instructions": self.instructions,
+            "source_file": self.source_file,
+            "source_dir": self.source_dir,
+            "source_format": self.source_format,
         }
 
     def has_tools(self) -> bool:
@@ -62,6 +77,79 @@ Skill = SkillDef
 # 2. Markdown 解析器
 # ====================================================================
 
+def _slugify_skill_name(value: str) -> str:
+    name = re.sub(r"\s+", "_", (value or "").strip().lower())
+    name = re.sub(r"[^a-z0-9_\-\u4e00-\u9fff]", "", name)
+    return name or "unnamed_skill"
+
+
+def _split_frontmatter(text: str) -> tuple[dict, str]:
+    """Return YAML frontmatter and body for Claude Code style SKILL.md files."""
+    if not text.startswith("---"):
+        return {}, text
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?", text, re.DOTALL)
+    if not match:
+        return {}, text
+    try:
+        data = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError as e:
+        print(f"[SkillLoader] [WARN] frontmatter 解析失败: {e}")
+        data = {}
+    body = text[match.end():]
+    return data if isinstance(data, dict) else {}, body
+
+
+def _extract_keywords(name: str, description: str, explicit_keywords: list | str | None = None) -> List[str]:
+    keywords: List[str] = []
+    if explicit_keywords:
+        if isinstance(explicit_keywords, str):
+            keywords.extend([item.strip() for item in re.split(r"[,，\n]", explicit_keywords) if item.strip()])
+        elif isinstance(explicit_keywords, list):
+            keywords.extend([str(item).strip() for item in explicit_keywords if str(item).strip()])
+    if name:
+        keywords.append(name)
+        keywords.extend(part for part in re.split(r"[_\-\s]+", name) if part)
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}", description or ""):
+        keywords.append(token.lower())
+    seen = set()
+    result = []
+    for keyword in keywords:
+        key = keyword.lower()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(keyword)
+    return result[:24]
+
+
+def _parse_claude_skill(filepath: str, text: str) -> Optional[SkillDef]:
+    frontmatter, body = _split_frontmatter(text)
+    if not frontmatter:
+        return None
+
+    fallback_name = os.path.basename(os.path.dirname(filepath)) or os.path.splitext(os.path.basename(filepath))[0]
+    name = _slugify_skill_name(str(frontmatter.get("name") or fallback_name))
+    description = str(frontmatter.get("description") or "").strip()
+    category = str(frontmatter.get("category") or "general").strip().lower()
+    keywords = _extract_keywords(name, description, frontmatter.get("keywords") or frontmatter.get("trigger"))
+    tool_module = str(frontmatter.get("tool_module") or frontmatter.get("toolModule") or "").strip()
+
+    instructions = body.strip()
+    license_text = str(frontmatter.get("license") or "").strip()
+    notes = f"Claude Code compatible skill. {license_text}".strip()
+    return SkillDef(
+        name=name,
+        description=description,
+        category=category,
+        keywords=keywords,
+        instructions=instructions,
+        notes=notes,
+        source_file=os.path.basename(filepath),
+        source_dir=os.path.dirname(filepath),
+        source_format="claude",
+        tool_module=tool_module,
+    )
+
+
 def parse_skill_md(filepath: str) -> Optional[SkillDef]:
     """解析单个 .md 技能文件，返回 SkillDef 或 None"""
     try:
@@ -71,9 +159,13 @@ def parse_skill_md(filepath: str) -> Optional[SkillDef]:
         print(f"[SkillLoader] [WARN] 无法读取 {filepath}: {e}")
         return None
 
+    claude_skill = _parse_claude_skill(filepath, text)
+    if claude_skill:
+        return claude_skill
+
     match = re.search(r'^#\s+Skill:\s*(.+)$', text, re.MULTILINE)
     if not match:
-        print(f"[SkillLoader] [WARN] {filepath} 缺少 '# Skill: <name>' 标题，跳过")
+        print(f"[SkillLoader] [WARN] {filepath} 缺少 '# Skill: <name>' 或 Claude frontmatter，跳过")
         return None
 
     name = match.group(1).strip()
@@ -128,6 +220,8 @@ def parse_skill_md(filepath: str) -> Optional[SkillDef]:
         instructions=instructions,
         notes=notes,
         source_file=os.path.basename(filepath),
+        source_dir=os.path.dirname(filepath),
+        source_format="lightme",
         tool_module=tool_module,
     )
 
@@ -137,17 +231,26 @@ def parse_skill_md(filepath: str) -> Optional[SkillDef]:
 # ====================================================================
 
 def scan_skill_files(skills_dir: str) -> List[SkillDef]:
-    """扫描目录下所有 .md 文件，返回解析成功的 SkillDef 列表"""
+    """扫描目录下所有技能文件，返回解析成功的 SkillDef 列表。
+
+    支持:
+      - LightMe: app/agent/skills/*.md
+      - Claude Code: .claude/skills/<name>/SKILL.md
+    """
     skills: List[SkillDef] = []
     if not os.path.isdir(skills_dir):
         return skills
-    for filename in sorted(os.listdir(skills_dir)):
-        if not filename.endswith(".md"):
-            continue
-        filepath = os.path.join(skills_dir, filename)
+    candidates: List[str] = []
+    for root, dirs, files in os.walk(skills_dir):
+        dirs[:] = [d for d in dirs if d not in {"__pycache__", "scripts", "references"}]
+        for filename in sorted(files):
+            lower = filename.lower()
+            if lower.endswith(".md") and (root == skills_dir or lower == "skill.md"):
+                candidates.append(os.path.join(root, filename))
+    for filepath in sorted(candidates):
         skill = parse_skill_md(filepath)
         if skill:
-            print(f"[SkillLoader] [OK] 已加载: {skill.name} ← {filename}")
+            print(f"[SkillLoader] [OK] 已加载: {skill.name} ← {filepath} ({skill.source_format})")
             skills.append(skill)
     return skills
 
@@ -163,6 +266,9 @@ class SkillRegistry:
         self._skills: Dict[str, SkillDef] = {}
 
     def register(self, skill: SkillDef):
+        if skill.name in self._skills:
+            old = self._skills[skill.name]
+            print(f"[SkillRegistry] [WARN] 技能重名，覆盖: {skill.name} ({old.source_format} → {skill.source_format})")
         self._skills[skill.name] = skill
         print(f"[SkillRegistry] [OK] 技能已注册: {skill.name} ({skill.category})")
 

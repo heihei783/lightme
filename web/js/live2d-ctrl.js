@@ -91,8 +91,8 @@ const Live2DCtrl = (() => {
     function loadModel() {
         const canvas = document.getElementById('live2d-canvas');
         if (!canvas) return;
-        canvas.width = 600;
-        canvas.height = 1000;
+        canvas.width = parseInt(canvas.dataset.modelWidth || '600', 10);
+        canvas.height = parseInt(canvas.dataset.modelHeight || '1000', 10);
 
         const role = roleData[charIdx];
         const modelPath = role.path + (role.outfits[outfitIdx] || role.outfits[0]);

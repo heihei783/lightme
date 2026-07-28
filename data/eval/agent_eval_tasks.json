@@ -1,0 +1,134 @@
+[
+  {
+    "id": "runtime_file_read_001",
+    "category": "file_read",
+    "prompt": "读取 README.md，并总结项目的三项核心能力。",
+    "expected_keywords": ["LightMe", "Agent", "RAG"]
+  },
+  {
+    "id": "runtime_file_read_002",
+    "category": "file_read",
+    "prompt": "读取 pyproject.toml，说明项目要求的 Python 版本。",
+    "expected_keywords": ["Python", "3.12"]
+  },
+  {
+    "id": "runtime_file_write_003",
+    "category": "file_write",
+    "prompt": "在 data/eval/tmp_runtime_note.txt 写入一行 Agent Runtime 测试说明。",
+    "expected_keywords": ["写入", "成功"]
+  },
+  {
+    "id": "runtime_python_004",
+    "category": "python",
+    "prompt": "用 Python 计算 1 到 100 的整数和，并给出结果。",
+    "expected_keywords": ["5050"]
+  },
+  {
+    "id": "runtime_python_005",
+    "category": "python",
+    "prompt": "用 Python 将列表 [3,1,4,1,5] 排序并返回。",
+    "expected_keywords": ["1", "3", "5"]
+  },
+  {
+    "id": "runtime_shell_006",
+    "category": "shell",
+    "prompt": "列出项目根目录下的 Python 入口文件，不要修改文件。",
+    "expected_keywords": ["main.py"]
+  },
+  {
+    "id": "planner_multi_step_007",
+    "category": "planner",
+    "prompt": "先读取 README.md，再读取 pyproject.toml，最后比较 README 里技术栈和依赖声明是否一致。",
+    "expected_keywords": ["README", "pyproject"]
+  },
+  {
+    "id": "planner_dependency_008",
+    "category": "planner",
+    "prompt": "先找出 app/agent 目录下有哪些模块，再说明哪个模块负责工具定义。",
+    "expected_keywords": ["tools.py", "工具"]
+  },
+  {
+    "id": "planner_recovery_009",
+    "category": "recovery",
+    "prompt": "尝试读取一个不存在的文件 data/no_such_file.txt，然后用 README.md 完成项目简介总结。",
+    "expected_keywords": ["README", "项目"]
+  },
+  {
+    "id": "planner_trace_010",
+    "category": "trace",
+    "prompt": "解释当前 Agent 运行过程中应该记录哪些 Trace 信息。",
+    "expected_keywords": ["Trace", "工具", "计划"]
+  },
+  {
+    "id": "runtime_tool_error_011",
+    "category": "error_handling",
+    "prompt": "读取一个不存在的文件并说明错误原因，不要重复读取同一路径。",
+    "expected_keywords": ["不存在"]
+  },
+  {
+    "id": "runtime_arg_error_012",
+    "category": "error_handling",
+    "prompt": "说明 execute_python_code 工具需要什么参数，并给出一个合法调用示例。",
+    "expected_keywords": ["code", "Python"]
+  },
+  {
+    "id": "memory_session_013",
+    "category": "memory",
+    "prompt": "记住本轮任务的用户偏好：回答要简洁。然后复述这个偏好。",
+    "expected_keywords": ["简洁"]
+  },
+  {
+    "id": "memory_episode_014",
+    "category": "memory",
+    "prompt": "总结一次成功执行文件读取任务时应保存到情景记忆的信息。",
+    "expected_keywords": ["任务", "方法", "结果"]
+  },
+  {
+    "id": "rag_route_015",
+    "category": "rag",
+    "prompt": "如果知识库中存在文档，说明 RAG 查询应如何检索并引用上下文。",
+    "expected_keywords": ["RAG", "检索", "上下文"]
+  },
+  {
+    "id": "tool_selection_016",
+    "category": "tool_selection",
+    "prompt": "根据任务类型选择合适工具：搜索最新信息、读取本地文件、执行 Python 计算分别应该选什么？",
+    "expected_keywords": ["web_search", "read_file_content", "execute_python_code"]
+  },
+  {
+    "id": "planner_parallel_017",
+    "category": "planner",
+    "prompt": "将读取 README.md 和读取 pyproject.toml 规划为两个无依赖子任务，再汇总结果。",
+    "expected_keywords": ["README", "pyproject", "依赖"]
+  },
+  {
+    "id": "planner_budget_018",
+    "category": "budget",
+    "prompt": "说明为什么 Agent Runtime 需要最大步数和最大运行时间限制。",
+    "expected_keywords": ["最大步数", "运行时间"]
+  },
+  {
+    "id": "safety_shell_019",
+    "category": "safety",
+    "prompt": "解释执行 Shell 命令前为什么需要人工审批，并举一个高风险操作例子。",
+    "expected_keywords": ["审批", "风险"]
+  },
+  {
+    "id": "final_report_020",
+    "category": "report",
+    "prompt": "根据本项目说明，列出红岩网校最终 PDF 应包含的五个核心部分。",
+    "expected_keywords": ["代码仓库", "系统架构", "对照实验"]
+  },
+  {
+    "id": "planner_replan_021",
+    "category": "replan",
+    "prompt": "设计一个失败后局部重新规划的例子，说明哪些子任务保留、哪些子任务替换。",
+    "expected_keywords": ["局部", "重新规划"]
+  },
+  {
+    "id": "trace_replay_022",
+    "category": "trace",
+    "prompt": "说明如何用 Trace 回放一次 Agent 任务执行过程。",
+    "expected_keywords": ["Trace", "回放"]
+  }
+]

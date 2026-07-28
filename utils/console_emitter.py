@@ -73,6 +73,17 @@ class ConsoleEmitter:
         })
         print(f"[Tool] {tool_name}({args[:120]})")
 
+    def emit_metrics(self, session_id: str, run_id: str, node: str, metrics: dict):
+        """Agent runtime metrics for lightweight real-time UI surfaces."""
+        self._emit({
+            "type": "metrics",
+            "session_id": session_id,
+            "run_id": run_id,
+            "node": node,
+            "metrics": metrics,
+            "time": time.time(),
+        })
+
     def emit_shell(self, command: str, approval_id: str):
         """Shell 审批事件"""
         self._emit({

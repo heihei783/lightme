@@ -25,13 +25,15 @@ import base64
 import concurrent.futures
 import json
 import os
+import subprocess
+import sys
 import threading as _threading
 from time import sleep
 import uuid
 
 import uvicorn
 import yaml
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -40,6 +42,8 @@ from starlette.responses import StreamingResponse
 from utils import db_handler as db
 from utils.path_tool import get_abs_path
 from app.llm.llm_chain import chat_loop
+from app.agent.runtime import RuntimeBudget, trace_store
+from utils.avatar_handler import AvatarProcessingError, inspect_avatar, process_avatar_bytes
 
 app = FastAPI()
 
@@ -54,6 +58,8 @@ _chat_executor = concurrent.futures.ThreadPoolExecutor(
 # 防止同一会话并发请求导致消息交错/历史损坏
 _session_busy: dict[str, bool] = {}
 _session_busy_lock = _threading.Lock()
+_desktop_pet_process: subprocess.Popen | None = None
+_desktop_pet_lock = _threading.Lock()
 
 
 def _try_acquire_session(sid: str) -> bool:
@@ -82,6 +88,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Session-Id"],
 )
+
 
 # ---------------------------------------------------------------------------
 # 静态文件挂载
@@ -234,33 +241,55 @@ def _write_avatar_config(cfg: dict):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
+def _get_avatar_info(filename: str) -> dict | None:
+    safe_name = os.path.basename(str(filename or ""))
+    if not safe_name or safe_name != filename:
+        return None
+    filepath = os.path.join(AVATAR_DIR, safe_name)
+    if not os.path.isfile(filepath):
+        return None
+    try:
+        metadata = inspect_avatar(filepath)
+    except (OSError, ValueError):
+        return None
+    version = os.stat(filepath).st_mtime_ns
+    return {
+        "filename": safe_name,
+        "url": f"/avatar/{safe_name}?v={version}",
+        **metadata,
+    }
+
+
 @app.get("/avatar/current")
 async def get_current_avatars():
     """获取当前用户头像和 AI 头像的文件名"""
     cfg = _read_avatar_config()
+    user_avatar = cfg.get("user_avatar", "")
+    ai_avatar = cfg.get("ai_avatar", "")
     return {
         "status": "success",
-        "user_avatar": cfg.get("user_avatar", ""),
-        "ai_avatar": cfg.get("ai_avatar", ""),
+        "user_avatar": user_avatar,
+        "ai_avatar": ai_avatar,
+        "avatars": {
+            "user": _get_avatar_info(user_avatar),
+            "ai": _get_avatar_info(ai_avatar),
+        },
     }
 
 
 @app.post("/avatar/upload")
 async def upload_avatar(file: UploadFile = File(...), type: str = Form("user")):
-    """上传用户头像，保存到 data/avatars/ 目录，返回访问 URL
-    type: 'user' 或 'ai'，指定头像类型
-    """
-    ext = os.path.splitext(file.filename or ".png")[1] or ".png"
-    if ext.lower() not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
-        return {"status": "error", "msg": "不支持的图片格式"}
+    """Validate, crop and store a high-resolution user or AI avatar."""
+    if type not in {"user", "ai"}:
+        raise HTTPException(status_code=400, detail="头像类型无效")
 
-    filename = f"avatar_{uuid.uuid4().hex[:8]}{ext}"
+    filename = f"avatar_{uuid.uuid4().hex[:12]}.webp"
     filepath = os.path.join(AVATAR_DIR, filename)
     content = await file.read()
-    if len(content) > 5 * 1024 * 1024:
-        return {"status": "error", "msg": "图片大小不能超过 5MB"}
-    with open(filepath, "wb") as f:
-        f.write(content)
+    try:
+        metadata = await asyncio.to_thread(process_avatar_bytes, content, filepath)
+    except AvatarProcessingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # 持久化当前头像文件名到 JSON 配置（解决 GUI 模式重启丢失问题）
     cfg = _read_avatar_config()
@@ -270,7 +299,14 @@ async def upload_avatar(file: UploadFile = File(...), type: str = Form("user")):
         cfg["user_avatar"] = filename
     _write_avatar_config(cfg)
 
-    return {"status": "success", "filename": filename, "url": f"/avatar/{filename}", "type": type}
+    avatar = _get_avatar_info(filename) or {"filename": filename, "url": f"/avatar/{filename}", **metadata}
+    return {
+        "status": "success",
+        "filename": filename,
+        "url": avatar["url"],
+        "type": type,
+        "avatar": avatar,
+    }
 
 # 头像静态文件挂载 — 必须在 /avatar/upload 路由之后，否则 POST 会被 StaticFiles 拦截
 app.mount("/avatar", StaticFiles(directory=AVATAR_DIR), name="avatar")
@@ -432,6 +468,11 @@ def _write_config(cfg: dict):
     """写入 YAML 配置文件"""
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    # Keep modules holding the shared config dict in sync without requiring a restart.
+    from utils.config_handler import config_ai as live_config
+
+    live_config.clear()
+    live_config.update(cfg)
 
 
 @app.get("/config")
@@ -600,6 +641,97 @@ async def get_tools_and_skills():
         "total_tools": len(base_tools) + len(all_skill_tools),
         "total_skills": len(skills_data),
     }
+
+
+# ============================= 桌面宠物 =============================
+
+@app.post("/desktop-pet/open")
+async def open_desktop_pet():
+    """启动独立的置顶 Live2D 桌面宠物窗口。"""
+    global _desktop_pet_process
+    with _desktop_pet_lock:
+        if _desktop_pet_process and _desktop_pet_process.poll() is None:
+            return {"status": "success", "msg": "桌面宠物已经在运行"}
+
+        pet_url = "http://127.0.0.1:8000/web/html/desktop_pet.html"
+        try:
+            _desktop_pet_process = subprocess.Popen(
+                [sys.executable, "-m", "gui.desktop_pet", pet_url],
+                cwd=get_abs_path("."),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            return {"status": "error", "msg": f"桌面宠物启动失败: {e}"}
+
+    return {"status": "success", "msg": "桌面宠物已启动"}
+
+
+# ============================= Agent Trace & Evaluation =============================
+
+@app.get("/agent/runs")
+async def list_agent_runs(session_id: str | None = None, limit: int = 20):
+    """查询 Agent 运行列表，可按 session_id 过滤。"""
+    return {
+        "status": "success",
+        "runs": trace_store.list_runs(session_id=session_id, limit=limit),
+    }
+
+
+@app.get("/agent/runtime-config")
+async def get_agent_runtime_config():
+    """返回可公开展示的 Agent Runtime 预算配置。"""
+    budget = RuntimeBudget.from_config()
+    return {
+        "status": "success",
+        "config": {
+            "agent_max_steps": budget.max_steps,
+            "agent_max_runtime_seconds": budget.max_runtime_seconds,
+            "agent_max_tokens": budget.max_tokens,
+            "planner_enabled": budget.planner_enabled,
+            "planner_parallelism": budget.planner_parallelism,
+            "trace_enabled": budget.trace_enabled,
+            "eval_mode": budget.eval_mode,
+        },
+    }
+
+
+@app.get("/agent/trace/{run_id}")
+async def get_agent_trace(run_id: str):
+    """查询单次 Agent 运行的结构化 Trace、计划版本和事件。"""
+    trace = trace_store.get_trace(run_id)
+    if not trace.get("run"):
+        return {"status": "error", "msg": f"未找到 run_id: {run_id}"}
+    return {"status": "success", **trace}
+
+
+@app.get("/agent/plans/{run_id}")
+async def get_agent_plans(run_id: str):
+    """只返回某次运行的计划版本，便于前端展示 Planner-Executor 状态。"""
+    trace = trace_store.get_trace(run_id)
+    if not trace.get("run"):
+        return {"status": "error", "msg": f"未找到 run_id: {run_id}"}
+    return {"status": "success", "run": trace["run"], "plans": trace["plans"]}
+
+
+@app.get("/agent/eval/tasks")
+async def get_agent_eval_tasks():
+    """返回内置 20+ 自动评测任务定义。"""
+    path = get_abs_path("data/eval/agent_eval_tasks.json")
+    if not os.path.exists(path):
+        return {"status": "error", "msg": "评测任务文件不存在"}
+    with open(path, "r", encoding="utf-8") as f:
+        return {"status": "success", "tasks": json.load(f)}
+
+
+@app.get("/agent/eval/results")
+async def get_agent_eval_results():
+    """返回最近一次评测脚本输出的 JSON 结果。"""
+    path = get_abs_path("data/eval/latest_results.json")
+    if not os.path.exists(path):
+        return {"status": "success", "results": None, "msg": "尚未运行评测"}
+    with open(path, "r", encoding="utf-8") as f:
+        return {"status": "success", "results": json.load(f)}
 
 
 # ============================= Shell 命令审批 =============================
