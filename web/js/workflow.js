@@ -1,5 +1,5 @@
 (function () {
-    const POS_KEY = 'planner_executor_workflow_positions_v3';
+    const POS_KEY = 'planner_scheduler_worker_positions_v4';
     const NODE_W = 190;
     const NODE_H = 86;
     const REFRESH_INTERVAL = 8000;
@@ -29,42 +29,48 @@
     const nodeAliases = {
         planning: 'planner',
         planner: 'planner',
-        skill_select: 'skill_select',
-        skillselect: 'skill_select',
-        executor: 'executor',
-        tool: 'executor',
+        scheduler: 'scheduler',
+        skill_select: 'worker_registry',
+        skillselect: 'worker_registry',
+        research_worker: 'workers',
+        browser_worker: 'workers',
+        execution_worker: 'workers',
+        verification_worker: 'workers',
+        general_worker: 'workers',
+        executor: 'workers',
+        tool: 'workers',
         tools: 'tools_box',
-        reflection: 'reflection',
-        verifier: 'reflection',
-        collaboration: 'reflection',
+        reflection: 'scheduler',
+        verifier: 'scheduler',
+        collaboration: 'scheduler',
         finalize: 'finalize',
         trace: 'trace',
     };
 
     const baseNodes = [
         { id: 'input', type: 'core', title: '用户输入', subtitle: '目标 / 上下文 / 约束', x: 70, y: 180, desc: '接收用户消息、图片和任务约束，创建隔离的运行状态。' },
-        { id: 'planner', type: 'core', title: 'Planner', subtitle: '结构化拆解与预算', x: 286, y: 70, desc: '生成带依赖、验收条件、风险级别和工具策略的结构化子任务。' },
-        { id: 'skill_select', type: 'core', title: 'Skill Select', subtitle: '按任务选择能力', x: 518, y: 205, desc: '根据当前子任务选择技能和最小工具集合，减少不必要的能力暴露。' },
-        { id: 'skills_box', type: 'skill', title: 'Skills Library', subtitle: '已注册技能', x: 250, y: 366, desc: '同步展示当前项目注册的 Skills；刷新后自动读取最新能力。' },
-        { id: 'executor', type: 'core', title: 'Executor', subtitle: '受预算约束的执行', x: 756, y: 280, desc: '按子任务策略调用工具，处理错误、重试、熔断和执行预算。' },
-        { id: 'tools_box', type: 'tool', title: 'Tools Library', subtitle: '可调用工具集合', x: 920, y: 72, desc: '基础工具和 Skill 附带工具的统一视图，实际调用仍受子任务策略限制。' },
-        { id: 'reflection', type: 'core', title: 'Reflection', subtitle: '确定性验证与评审', x: 650, y: 474, desc: '依据验收条件检查结果，决定完成、重试、失败或触发重新规划。' },
-        { id: 'finalize', type: 'core', title: 'Finalize', subtitle: '结果汇总与交付', x: 930, y: 492, desc: '汇总已完成的子任务和停止原因，生成最终用户结果。' },
+        { id: 'planner', type: 'core', title: 'Planner', subtitle: '结构化拆解与预算', x: 278, y: 62, desc: '生成带依赖、验收条件、风险级别和工具策略的结构化子任务 DAG。' },
+        { id: 'scheduler', type: 'core', title: 'Scheduler', subtitle: 'DAG 前沿与风险调度', x: 520, y: 178, desc: '选择可执行前沿；只并行无写冲突的低风险任务，并归并结构化 WorkerResult。' },
+        { id: 'worker_registry', type: 'core', title: 'Worker Registry', subtitle: '按能力选择执行者', x: 282, y: 350, desc: '根据 task_type、skill 和工具能力选择 Research、Browser、Execution、Verification 或 General Worker。' },
+        { id: 'workers', type: 'core', title: 'Isolated Workers', subtitle: '独立上下文真实执行', x: 766, y: 292, desc: '每个子任务拥有独立消息和最小工具集合，返回证据、产物、验收状态及资源用量。' },
+        { id: 'skills_box', type: 'skill', title: 'Skills Library', subtitle: '已注册技能', x: 70, y: 466, desc: '同步展示当前项目注册的 Skills；Worker 只加载当前子任务需要的技能。' },
+        { id: 'tools_box', type: 'tool', title: 'Tools Library', subtitle: '可调用工具集合', x: 930, y: 72, desc: '基础工具和 Skill 附带工具的统一视图，实际调用受 Worker 与子任务双重白名单限制。' },
+        { id: 'finalize', type: 'core', title: 'Finalize', subtitle: '结果汇总与交付', x: 938, y: 488, desc: '汇总结构化结果、证据、产物和停止原因，生成最终用户结果。' },
         { id: 'trace', type: 'trace', title: 'Agent Trace', subtitle: '事件 / 计划版本 / 审计', x: 68, y: 474, desc: '持久化运行事件、计划版本、指标和工具策略，支持回放与审计。' },
     ];
 
     const baseEdges = [
         ['input', 'planner', 'core'],
-        ['planner', 'skill_select', 'core'],
-        ['skill_select', 'skills_box', 'capability'],
-        ['skills_box', 'executor', 'capability'],
-        ['skill_select', 'executor', 'core'],
-        ['executor', 'tools_box', 'capability'],
-        ['executor', 'reflection', 'core'],
-        ['reflection', 'planner', 'core'],
-        ['reflection', 'finalize', 'core'],
-        ['executor', 'trace', 'trace'],
-        ['reflection', 'trace', 'trace'],
+        ['planner', 'scheduler', 'core'],
+        ['scheduler', 'worker_registry', 'core'],
+        ['worker_registry', 'workers', 'core'],
+        ['skills_box', 'worker_registry', 'capability'],
+        ['workers', 'tools_box', 'capability'],
+        ['workers', 'scheduler', 'core'],
+        ['scheduler', 'planner', 'core'],
+        ['scheduler', 'finalize', 'core'],
+        ['workers', 'trace', 'trace'],
+        ['scheduler', 'trace', 'trace'],
         ['finalize', 'trace', 'trace'],
     ];
 

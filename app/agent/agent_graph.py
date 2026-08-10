@@ -25,11 +25,15 @@ from app.agent.tools import DEFAULT_TOOLS
 from app.agent.runtime import (
     RuntimeBudget,
     allowed_tools_for_subtask,
+    build_reasoning_update,
+    build_execution_handoff,
     budget_exceeded,
     detect_tool_policy_violations,
     extract_json_object,
+    format_handoff_context,
     get_next_subtask_index,
     get_ready_subtasks,
+    is_continuation_request,
     message_token_usage,
     new_run_id,
     normalize_plan,
@@ -39,6 +43,13 @@ from app.agent.runtime import (
     trace_store,
     update_plan_after_subtask,
     verify_subtask_result,
+)
+from app.agent.workers import (
+    WorkerResult,
+    WorkerTask,
+    dependency_result_map,
+    select_dispatch_batch,
+    worker_orchestrator,
 )
 from utils.file_handler import txt_loader
 from utils.path_tool import get_abs_path
@@ -66,6 +77,13 @@ class AgentState(TypedDict):
     trace_enabled: bool#是否记录结构化 Trace
     stop_reason: str#预算或异常终止原因
     recent_tool_calls: List[str]#最近工具调用签名，用于重复调用检测
+    run_context: Dict[str, Any]#本次运行隔离上下文，不与其他会话共享
+    task_results: Dict[str, Any]#结构化 Worker 结果，按 subtask_id 索引
+    artifacts: List[Dict[str, Any]]#本次运行产生的文件、目录、截图等产物
+    dispatch_batch: List[str]#最近一次调度的子任务 ID
+    scheduler_epoch: int#调度批次计数
+    replan_count: int#局部重规划次数
+    runtime_allowed_tools: List[str]#统一 Runtime 为本次运行授予的工具边界
 
 
 def _emit_runtime_metrics(state: Dict[str, Any], node: str, step_count: int | None = None, token_count: int | None = None, extra: Dict[str, Any] | None = None) -> None:
@@ -91,6 +109,33 @@ def _emit_runtime_metrics(state: Dict[str, Any], node: str, step_count: int | No
         state.get("run_id") or "",
         node,
         payload,
+    )
+
+
+def _record_reasoning_update(
+    state: Dict[str, Any],
+    node: str,
+    phase: str,
+    title: str,
+    summary: str,
+    *,
+    next_action: str = "",
+    subtask_id: Any = None,
+    status: str = "running",
+) -> None:
+    """Persist a concise public work update instead of private chain-of-thought."""
+    record_trace(
+        state,
+        "reasoning_update",
+        node,
+        build_reasoning_update(
+            phase,
+            title,
+            summary,
+            next_action=next_action,
+            subtask_id=subtask_id,
+            status=status,
+        ),
     )
 
 
@@ -237,24 +282,80 @@ def planning_node(state: AgentState) -> AgentState:
     print("📋 [Planning] 规划节点 —— 分析任务复杂度并拆解子任务")
     print("=" * 60)
 
-    user_request, history_context = _get_user_request_with_context(state)
-    last_msg = state["messages"][-1]
-    current_text = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+    run_context = dict(state.get("run_context") or {})
+    if run_context:
+        user_request = str(run_context.get("full_request") or run_context.get("current_request") or "")
+        history_context = str(run_context.get("history_context") or "")
+        current_text = str(run_context.get("current_request") or user_request)
+    else:
+        user_request, history_context = _get_user_request_with_context(state)
+        last_msg = state["messages"][-1]
+        current_text = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+        prior_handoffs = trace_store.get_session_handoffs(
+            state.get("session_id") or "default",
+            limit=2,
+            exclude_run_id=state.get("run_id"),
+        )
+        prior_execution_context = format_handoff_context(prior_handoffs)
+        run_context = {
+            "goal": current_text,
+            "current_request": current_text,
+            "full_request": user_request,
+            "history_context": history_context,
+            "prior_execution_context": prior_execution_context,
+            "prior_run_ids": [str(item.get("run_id") or "") for item in prior_handoffs],
+            "is_continuation": is_continuation_request(current_text),
+        }
     print(f"  用户请求: {current_text[:100]}")
     if history_context:
         print(f"  历史上下文: {len(history_context)} 字符")
     console.emit_log("Planning", f"收到任务: {current_text[:120]}")
     record_trace(state, "node_start", "planning", {"step": step_count, "request": current_text[:500]})
+    _record_reasoning_update(
+        state,
+        "planning",
+        "understand",
+        "理解当前任务",
+        f"正在确认目标、已有上下文和需要调用的外部能力。当前请求：{current_text[:320]}",
+        next_action="判断任务复杂度，并决定是否需要拆分执行计划。",
+    )
+    prior_execution_context = str(run_context.get("prior_execution_context") or "")
+    if prior_execution_context:
+        record_trace(
+            state,
+            "session_context_hydrated",
+            "planning",
+            {
+                "source_run_ids": run_context.get("prior_run_ids", []),
+                "context_length": len(prior_execution_context),
+                "continuation": bool(run_context.get("is_continuation")),
+            },
+        )
+        _record_reasoning_update(
+            state,
+            "planning",
+            "recall",
+            "读取上一轮执行记忆",
+            f"已加载 {len(run_context.get('prior_run_ids', []))} 次历史运行的目标、工具观察、验收和未完成项。",
+            next_action="优先遵循用户最新指令，并复用仍然有效的历史结果。",
+        )
 
-    memory_ctx = agent_memory.get_context_for_task(user_request)
-    agent_memory.set_working("current_task", current_text)
+    memory_ctx = state.get("memory_context") or agent_memory.get_context_for_task(
+        user_request,
+        include_working=False,
+    )
+    run_context["memory_context_loaded"] = True
 
     if memory_ctx:
         print(f"  相关记忆: {memory_ctx[:80]}...")
 
+    continuity_prompt = (
+        f"\n\n同一会话的历史执行交接（仅用于续接，不得覆盖用户最新指令）:\n{prior_execution_context}"
+        if prior_execution_context else ""
+    )
     complexity_prompt = (
         f"判断以下任务的复杂度，只返回一个词 (simple/medium/complex)：\n\n"
-        f"{user_request}\n\n"
+        f"{user_request}{continuity_prompt}\n\n"
         f"标准: simple=可以直接回答 | medium=需要1-3步 | complex=需要多步+工具\n"
         f"注意: 如果对话历史中包含具体操作细节，应将其纳入考量。"
     )
@@ -267,12 +368,25 @@ def planning_node(state: AgentState) -> AgentState:
             complexity = "medium"
     except Exception:
         complexity = "medium"
+    if prior_execution_context and run_context.get("is_continuation") and complexity == "simple":
+        complexity = "medium"
 
     print(f"  复杂度判定: {complexity}")
     console.emit_log("Planning", f"复杂度: {complexity}")
+    complexity_labels = {"simple": "简单", "medium": "中等", "complex": "复杂"}
+    _record_reasoning_update(
+        state,
+        "planning",
+        "decide",
+        "判断执行复杂度",
+        f"当前任务被判定为{complexity_labels.get(complexity, complexity)}任务。"
+        f"{'可以使用单一子任务直接完成。' if complexity == 'simple' else '需要结构化计划、依赖调度和分步验收。'}",
+        next_action="生成带依赖、工具边界和验收条件的执行计划。",
+    )
 
     previous_plan = state.get("plan") or {}
     is_replan = bool(previous_plan.get("subtasks"))
+    replan_count = state.get("replan_count", 0) + (1 if is_replan else 0)
     failed_task = ""
     if is_replan:
         for st in previous_plan.get("subtasks", []):
@@ -283,9 +397,10 @@ def planning_node(state: AgentState) -> AgentState:
     if complexity == "simple" and not is_replan:
         raw_plan = {
             "goal": current_text[:100],
+            "decision_summary": "当前请求无需外部工具或复杂依赖，使用一个可验收子任务直接完成。",
             "subtasks": [{
                 "id": "1",
-                "desc": current_text if not history_context else f"{current_text}\n上下文: {history_context}",
+                "desc": current_text,
                 "expected_result": "直接回答用户请求并给出可交付结果",
                 "task_type": "general",
                 "risk_level": "low",
@@ -303,6 +418,12 @@ def planning_node(state: AgentState) -> AgentState:
             f"  - {s['name']} ({s['category']}): {s['description']}"
             for s in skills_available
         ])
+        runtime_allowed_tools = state.get("runtime_allowed_tools") or [tool.name for tool in DEFAULT_TOOLS]
+        tools_desc = "\n".join(
+            f"  - {tool.name}: {(tool.description or '').split(chr(10))[0][:120]}"
+            for tool in DEFAULT_TOOLS
+            if tool.name in runtime_allowed_tools
+        )
 
         replan_hint = ""
         if is_replan:
@@ -318,10 +439,13 @@ def planning_node(state: AgentState) -> AgentState:
             f"{user_request}\n"
             f"{replan_hint}\n\n"
             f"可用技能:\n{skills_desc}\n\n"
+            f"可用工具:\n{tools_desc}\n\n"
             f"相关记忆:\n{memory_ctx if memory_ctx else '无相关记忆'}\n\n"
+            f"同一会话的历史执行交接:\n{prior_execution_context if prior_execution_context else '无'}\n\n"
             f"重要: 如果对话历史中包含具体信息（如文件名、路径、命令等），必须将其应用到子任务中。\n"
             f"不要猜测或编造文件路径/名称，只使用用户在对话历史中明确提到的信息。\n\n"
             f"规划约束:\n"
+            f"- decision_summary 用 1-2 句面向用户说明执行策略和关键依据，不要输出逐步隐性思维。\n"
             f"- 子任务必须有唯一 id、清晰 desc、expected_result、depends_on。\n"
             f"- 每个子任务必须包含 task_type、risk_level、acceptance_checks、allowed_tools、max_tool_calls。\n"
             f"- skill 只能从可用技能列表中选择；不确定时用 null。\n"
@@ -334,7 +458,7 @@ def planning_node(state: AgentState) -> AgentState:
             f"- 依赖必须形成 DAG，不能循环依赖，不能依赖不存在的 id。\n"
             f"- 局部重新规划时保留已完成子任务，只替换失败子任务及其后续受影响任务。\n\n"
             f"请输出 JSON 格式的执行计划 (不要包含其他内容)：\n"
-            f'{{"goal": "目标描述", "subtasks": ['
+            f'{{"goal": "目标描述", "decision_summary": "简短说明为何采用该执行策略", "subtasks": ['
             f'{{"id": "1", "desc": "子任务1描述", "expected_result": "验收标准", "task_type": "read", "risk_level": "low", "acceptance_checks": ["result_is_non_empty"], "allowed_tools": ["read_file_content"], "max_tool_calls": 1, "skill": "推荐技能名或null", "depends_on": []}},'
             f'{{"id": "2", "desc": "子任务2描述", "expected_result": "验收标准", "task_type": "verify", "risk_level": "low", "acceptance_checks": ["result_contains_pass_fail_judgement"], "allowed_tools": ["execute_python_code"], "max_tool_calls": 1, "skill": "推荐技能名或null", "depends_on": ["1"]}}'
             f'], "estimated_steps": N}}'
@@ -349,6 +473,7 @@ def planning_node(state: AgentState) -> AgentState:
             print(f"[Planning] JSON 解析失败: {e}，使用默认计划")
             raw_plan = {
                 "goal": user_request[:100],
+                "decision_summary": "规划输出无法解析，降级为单一通用子任务以保证任务仍可继续。",
                 "subtasks": [{
                     "id": "1",
                     "desc": user_request,
@@ -370,6 +495,19 @@ def planning_node(state: AgentState) -> AgentState:
         replan_from=failed_task or None,
     )
     plan = repair_plan_for_capabilities(plan, skill_registry.list_all())
+    runtime_allowed_tools = state.get("runtime_allowed_tools") or [tool.name for tool in DEFAULT_TOOLS]
+    runtime_allowed_set = set(runtime_allowed_tools)
+    for subtask in plan.get("subtasks", []):
+        requested = [str(item) for item in subtask.get("allowed_tools") or []]
+        if requested:
+            subtask["allowed_tools"] = [name for name in requested if name in runtime_allowed_set]
+        else:
+            subtask["allowed_tools"] = allowed_tools_for_subtask(subtask, runtime_allowed_tools)
+        if not subtask["allowed_tools"] and subtask.get("task_type") != "general":
+            subtask["capability_blocked"] = True
+            subtask["status"] = "failed"
+            subtask["error"] = "当前 Runtime 未授予此子任务所需工具"
+    plan = update_plan_after_subtask(plan)
     if is_replan:
         completed = [st for st in previous_plan.get("subtasks", []) if st.get("status") == "completed"]
         if completed:
@@ -384,7 +522,6 @@ def planning_node(state: AgentState) -> AgentState:
                     })
             plan = update_plan_after_subtask(plan)
 
-    agent_memory.set_working("plan", plan)
     if state.get("trace_enabled", True):
         trace_store.record_plan(state["run_id"], plan)
     record_trace(
@@ -397,10 +534,22 @@ def planning_node(state: AgentState) -> AgentState:
             "ready_subtasks": plan.get("ready_subtasks", []),
             "validation_errors": plan.get("validation_errors", []),
             "quality": plan.get("quality", {}),
+            "decision_summary": plan.get("decision_summary", ""),
             "capability_repairs": plan.get("capability_repairs", []),
             "budget_warnings": plan.get("budget_warnings", []),
             "state_graph": plan.get("state_graph", {}),
         },
+    )
+    ready_ids = [str(item) for item in plan.get("ready_subtasks", [])]
+    _record_reasoning_update(
+        state,
+        "planning",
+        "plan",
+        "形成执行计划" if not is_replan else "完成局部重规划",
+        f"{plan.get('decision_summary', '')} 当前计划包含 {len(plan.get('subtasks', []))} 个子任务，"
+        f"首批可执行节点为 {', '.join(ready_ids) if ready_ids else '无'}，计划质量 {plan.get('quality', {}).get('score', '-')}。",
+        next_action="将无依赖且风险允许的子任务交给对应 Worker 执行。",
+        status="adjusted" if is_replan else "ready",
     )
 
     print(f"  子任务数: {len(plan.get('subtasks', []))}")
@@ -442,6 +591,8 @@ def planning_node(state: AgentState) -> AgentState:
         "final_output": "",
         "step_count": step_count,
         "token_count": token_count,
+        "run_context": run_context,
+        "replan_count": replan_count,
     }
 
 
@@ -511,6 +662,7 @@ def skill_select_node(state: AgentState) -> AgentState:
 
 MAX_TOOL_ITERATIONS = RuntimeBudget.from_config().max_steps
 MAX_SUBTASK_RETRIES = 3
+MAX_REPLANS = 2
 
 
 def _safe_truncate_history(messages: List, max_count: int = 5) -> List:
@@ -1150,7 +1302,269 @@ def collaboration_node(state: AgentState) -> AgentState:
     }
 
 
-# -------------------- 节点7: 汇总输出节点 --------------------
+# -------------------- 节点7: DAG 调度与真实 Worker 执行 --------------------
+def scheduler_node(state: AgentState) -> AgentState:
+    """Dispatch one DAG frontier, merge structured results, then verify and advance."""
+    budget = RuntimeBudget.from_config()
+    step_count = state.get("step_count", 0) + 1
+    token_count = state.get("token_count", 0)
+    scheduler_epoch = state.get("scheduler_epoch", 0) + 1
+    stop_reason = budget_exceeded(state, budget) or state.get("stop_reason", "")
+    if stop_reason:
+        record_trace(state, "scheduler_stopped", "scheduler", {"reason": stop_reason})
+        _record_reasoning_update(
+            state,
+            "scheduler",
+            "verify",
+            "停止继续调度",
+            f"Runtime 预算或执行状态要求停止：{stop_reason}",
+            next_action="保留已有证据并进入结果汇总。",
+            status="warning",
+        )
+        return {
+            "stop_reason": stop_reason,
+            "step_count": step_count,
+            "scheduler_epoch": scheduler_epoch,
+            "dispatch_batch": [],
+        }
+
+    source_plan = state.get("plan") or {}
+    plan = dict(source_plan)
+    plan["subtasks"] = [dict(item) for item in source_plan.get("subtasks", [])]
+    batch = select_dispatch_batch(plan, budget.planner_parallelism)
+    batch_ids = [str(item.get("id")) for item in batch]
+    if not batch:
+        unfinished = [
+            str(item.get("id"))
+            for item in plan.get("subtasks", [])
+            if item.get("status") not in {"completed", "failed", "skipped"}
+        ]
+        reason = "" if not unfinished else f"no dispatchable subtask: {', '.join(unfinished)}"
+        if reason:
+            record_trace(state, "scheduler_blocked", "scheduler", {"reason": reason, "subtasks": unfinished})
+            _record_reasoning_update(
+                state,
+                "scheduler",
+                "verify",
+                "计划暂时无法继续",
+                f"仍有未完成子任务，但依赖或状态使它们无法派发：{', '.join(unfinished)}。",
+                next_action="进入汇总并明确报告未完成项。",
+                status="warning",
+            )
+        return {
+            "plan": plan,
+            "stop_reason": reason,
+            "step_count": step_count,
+            "scheduler_epoch": scheduler_epoch,
+            "dispatch_batch": [],
+        }
+
+    for item in plan.get("subtasks", []):
+        if str(item.get("id")) in batch_ids:
+            item["status"] = "running"
+    plan = update_plan_after_subtask(plan)
+    if state.get("trace_enabled", True):
+        trace_store.record_plan(state["run_id"], plan)
+
+    parallelism = min(len(batch), budget.planner_parallelism)
+    record_trace(
+        state,
+        "scheduler_batch_created",
+        "scheduler",
+        {
+            "epoch": scheduler_epoch,
+            "subtask_ids": batch_ids,
+            "parallelism": parallelism,
+            "mode": "parallel" if len(batch) > 1 else "serial",
+            "state_graph": plan.get("state_graph", {}),
+        },
+    )
+    mode_text = "并行" if len(batch) > 1 else "串行"
+    _record_reasoning_update(
+        state,
+        "scheduler",
+        "next",
+        f"选择第 {scheduler_epoch} 批执行任务",
+        f"子任务 {', '.join(batch_ids)} 已满足依赖；根据风险与并行度限制，采用{mode_text}执行。",
+        next_action="为每个子任务创建隔离 Worker 上下文并授予最小工具集合。",
+        status="running",
+    )
+    console.emit_log(
+        "Scheduler",
+        f"批次 {scheduler_epoch}: {', '.join(batch_ids)} ({'并行' if len(batch) > 1 else '串行'})",
+    )
+
+    task_results = dict(state.get("task_results") or {})
+    run_context = state.get("run_context") or {}
+    elapsed = max(0, time.time() - float(state.get("started_at") or time.time()))
+    worker_deadline = max(5, int(budget.max_runtime_seconds - elapsed))
+    worker_memory_context = "\n\n".join(
+        part
+        for part in (
+            str(run_context.get("prior_execution_context") or ""),
+            str(state.get("memory_context") or ""),
+        )
+        if part
+    )
+    worker_tasks = [
+        WorkerTask.from_subtask(
+            item,
+            run_id=state["run_id"],
+            session_id=state.get("session_id") or "default",
+            dependency_results=dependency_result_map(item, task_results),
+            memory_context=worker_memory_context,
+            deadline_seconds=worker_deadline,
+            runtime_allowed_tools=state.get("runtime_allowed_tools"),
+        )
+        for item in batch
+    ]
+
+    def event_sink(event_type: str, node: str, payload: Dict[str, Any]) -> None:
+        record_trace(state, event_type, node, payload)
+
+    results = worker_orchestrator.execute_batch(
+        worker_tasks,
+        parallelism=parallelism,
+        event_sink=event_sink,
+    )
+    result_by_id = {result.subtask_id: result for result in results}
+    artifacts = list(state.get("artifacts") or [])
+    completed_ids: List[str] = []
+    retry_ids: List[str] = []
+    replan_ids: List[str] = []
+    failed_ids: List[str] = []
+
+    for item in plan.get("subtasks", []):
+        task_id = str(item.get("id"))
+        result: WorkerResult | None = result_by_id.get(task_id)
+        if result is None:
+            continue
+        previous_retries = int(item.get("retry_count") or 0)
+        retry_count = previous_retries
+        if result.status == "completed":
+            status = "completed"
+            completed_ids.append(task_id)
+        elif result.status == "failed":
+            status = "failed"
+            failed_ids.append(task_id)
+        else:
+            retry_count += 1
+            if result.status == "retryable" and retry_count < MAX_SUBTASK_RETRIES:
+                status = "retry"
+                retry_ids.append(task_id)
+            elif state.get("replan_count", 0) < MAX_REPLANS:
+                status = "adjust"
+                replan_ids.append(task_id)
+            else:
+                status = "failed"
+                failed_ids.append(task_id)
+
+        item.update(
+            {
+                "status": status,
+                "result": result.summary[:2000],
+                "error": (result.error or "")[:500],
+                "retry_count": retry_count,
+                "worker": result.worker,
+                "evidence": [entry.model_dump() for entry in result.evidence],
+                "artifacts": [entry.model_dump() for entry in result.artifacts],
+                "tool_calls": result.tool_calls,
+                "verifier": result.verification,
+            }
+        )
+        task_results[task_id] = result.model_dump()
+        for artifact in result.artifacts:
+            artifacts.append({"subtask_id": task_id, "worker": result.worker, **artifact.model_dump()})
+        token_count += result.token_count
+        step_count += result.step_count
+        agent_memory.save_episodic(
+            task=item.get("desc", ""),
+            approach=f"worker: {result.worker}",
+            result=result.summary[:300],
+            reflection=str(result.verification)[:300],
+            success=status == "completed",
+            tags=[result.worker, str(item.get("task_type") or "general"), "worker"],
+        )
+
+    # A failed dependency makes its downstream branch non-runnable and explicitly skipped.
+    blocked_by = {
+        str(item.get("id"))
+        for item in plan.get("subtasks", [])
+        if item.get("status") in {"failed", "skipped"}
+    }
+    changed = True
+    while changed:
+        changed = False
+        for item in plan.get("subtasks", []):
+            if item.get("status") not in {"pending", "retry"}:
+                continue
+            failed_dependencies = [
+                str(dep) for dep in item.get("depends_on") or [] if str(dep) in blocked_by
+            ]
+            if failed_dependencies:
+                item["status"] = "skipped"
+                item["error"] = f"dependency failed: {', '.join(failed_dependencies)}"
+                blocked_by.add(str(item.get("id")))
+                changed = True
+
+    plan = update_plan_after_subtask(plan)
+    if state.get("trace_enabled", True):
+        trace_store.record_plan(state["run_id"], plan)
+    record_trace(
+        state,
+        "scheduler_batch_completed",
+        "scheduler",
+        {
+            "epoch": scheduler_epoch,
+            "completed": completed_ids,
+            "retry": retry_ids,
+            "needs_replan": replan_ids,
+            "failed": failed_ids,
+            "ready_subtasks": plan.get("ready_subtasks", []),
+            "state_graph": plan.get("state_graph", {}),
+        },
+    )
+    next_ready = [str(item) for item in plan.get("ready_subtasks", [])]
+    batch_outcome = (
+        f"本批通过 {len(completed_ids)} 个，重试 {len(retry_ids)} 个，"
+        f"需重规划 {len(replan_ids)} 个，失败 {len(failed_ids)} 个。"
+    )
+    _record_reasoning_update(
+        state,
+        "scheduler",
+        "next",
+        "更新计划执行状态",
+        batch_outcome,
+        next_action=(
+            f"继续执行就绪子任务 {', '.join(next_ready)}。"
+            if next_ready else "没有新的就绪节点，检查是否需要重规划或汇总结果。"
+        ),
+        status="warning" if retry_ids or replan_ids or failed_ids else "success",
+    )
+    _emit_runtime_metrics(
+        {**state, "plan": plan},
+        "scheduler",
+        step_count,
+        token_count,
+        {"status": "running", "phase": f"完成调度批次 {scheduler_epoch}"},
+    )
+    batch_summary = (
+        f"[Scheduler] 批次 {scheduler_epoch} 完成: "
+        f"通过 {len(completed_ids)}，重试 {len(retry_ids)}，重规划 {len(replan_ids)}，失败 {len(failed_ids)}"
+    )
+    return {
+        "plan": plan,
+        "task_results": task_results,
+        "artifacts": artifacts,
+        "dispatch_batch": batch_ids,
+        "scheduler_epoch": scheduler_epoch,
+        "messages": [AIMessage(content=batch_summary)],
+        "step_count": step_count,
+        "token_count": token_count,
+    }
+
+
+# -------------------- 节点8: 汇总输出节点 --------------------
 def finalize_node(state: AgentState) -> AgentState:
     step_count = state.get("step_count", 0) + 1
     token_count = state.get("token_count", 0)
@@ -1162,7 +1576,16 @@ def finalize_node(state: AgentState) -> AgentState:
     results_parts = []
     for st in subtasks:
         if st.get("result"):
-            results_parts.append(f"[子任务{st['id']}]: {st['result'][:300]}")
+            evidence_sources = [
+                str(item.get("source"))
+                for item in st.get("evidence") or []
+                if isinstance(item, dict) and item.get("source")
+            ]
+            evidence_note = f"\n证据来源: {', '.join(evidence_sources)}" if evidence_sources else ""
+            results_parts.append(
+                f"[子任务{st['id']} / {st.get('worker', 'worker')} / {st.get('status', 'unknown')}]: "
+                f"{st['result'][:1500]}{evidence_note}"
+            )
 
     print("\n" + "=" * 60)
     print("📦 [Finalize] 汇总节点 —— 整合所有子任务结果，注入人格")
@@ -1175,10 +1598,24 @@ def finalize_node(state: AgentState) -> AgentState:
         "finalize",
         {"step": step_count, "completed": completed_count, "total": len(subtasks), "stop_reason": state.get("stop_reason", "")},
     )
+    _record_reasoning_update(
+        state,
+        "finalize",
+        "summarize",
+        "整理最终交付",
+        f"正在汇总 {completed_count}/{len(subtasks)} 个已完成子任务、证据来源和产物，并标注失败或停止原因。",
+        next_action="生成面向用户的最终答复，并保存下一轮可复用的执行交接。",
+    )
 
     all_results = "\n\n".join(results_parts) if results_parts else "任务已直接完成"
 
-    user_request = agent_memory.get_working("current_task", "")
+    run_context = state.get("run_context") or {}
+    user_request = str(run_context.get("current_request") or run_context.get("goal") or plan.get("goal") or "")
+    artifact_lines = [
+        f"- {item.get('kind', 'artifact')}: {item.get('uri', '')} ({item.get('description', '')})"
+        for item in state.get("artifacts", [])
+    ]
+    artifact_context = "\n".join(artifact_lines) if artifact_lines else "无"
 
     personality = _get_personality_prompt()
 
@@ -1186,6 +1623,7 @@ def finalize_node(state: AgentState) -> AgentState:
         f"=== 人格设定（必须严格遵守） ===\n{personality}\n\n"
         f"=== 用户请求 ===\n{user_request}\n\n"
         f"=== 各子任务执行结果 ===\n{all_results}\n\n"
+        f"=== 已生成产物 ===\n{artifact_context}\n\n"
         f"请将以上所有结果整合为一个完整、连贯、有条理的最终回答。"
         f"必须使用人格设定中指定的语气、称呼和行为风格。"
     )
@@ -1206,11 +1644,21 @@ def finalize_node(state: AgentState) -> AgentState:
         terminal_status = "stopped"
     else:
         terminal_status = "completed"
+    _record_reasoning_update(
+        state,
+        "finalize",
+        "summarize",
+        "形成最终答复",
+        f"本次运行状态为 {terminal_status}；完成 {completed_count}/{len(subtasks)} 个子任务，失败 {failed_count} 个。",
+        next_action="持久化计划、工具观察、验收结果、产物和未完成项。",
+        status="success" if terminal_status == "completed" else "warning",
+    )
     is_success = terminal_status == "completed"
     agent_memory.learn_from_interaction(
         user_input=user_request,
         agent_response=final_text[:500],
-        success=is_success
+        success=is_success,
+        session_id=state.get("session_id") or "default",
     )
 
     metrics = {
@@ -1219,9 +1667,46 @@ def finalize_node(state: AgentState) -> AgentState:
         "failed_subtasks": failed_count,
         "step_count": step_count,
         "token_count": token_count,
-        "tool_calls": sum(1 for msg in state.get("messages", []) if hasattr(msg, "tool_call_id")),
+        "tool_calls": sum(
+            len(item.get("tool_calls") or [])
+            for item in (state.get("task_results") or {}).values()
+            if isinstance(item, dict)
+        ),
+        "worker_results": len(state.get("task_results") or {}),
+        "artifacts": len(state.get("artifacts") or []),
+        "scheduler_epochs": state.get("scheduler_epoch", 0),
+        "replans": state.get("replan_count", 0),
         "stop_reason": stop_reason,
     }
+    handoff = build_execution_handoff(
+        run_id=state.get("run_id") or "",
+        goal=user_request,
+        status=terminal_status,
+        plan=plan,
+        final_output=final_text,
+        artifacts=state.get("artifacts") or [],
+        stop_reason=stop_reason,
+        scheduler_epochs=state.get("scheduler_epoch", 0),
+        replan_count=state.get("replan_count", 0),
+    )
+    try:
+        trace_store.save_handoff(
+            state.get("run_id") or "",
+            state.get("session_id") or "default",
+            handoff,
+        )
+        record_trace(
+            state,
+            "run_handoff_saved",
+            "finalize",
+            {
+                "subtasks": len(handoff.get("subtasks") or []),
+                "artifacts": len(handoff.get("artifacts") or []),
+                "status": terminal_status,
+            },
+        )
+    except Exception as exc:
+        console.emit_log("Finalize", f"执行交接保存失败: {exc}")
     record_trace(state, "run_finalized", "finalize", {"final_output": final_text[:1000], "metrics": metrics})
     if state.get("trace_enabled", True):
         trace_store.finish_run(
@@ -1231,7 +1716,6 @@ def finalize_node(state: AgentState) -> AgentState:
             metrics,
         )
 
-    agent_memory.clear_working()
     _emit_runtime_metrics(
         state,
         "finalize",
@@ -1312,6 +1796,23 @@ def decide_after_reflection(state: AgentState) -> Literal["planning", "skill_sel
     return "skill_select"
 
 
+def route_after_scheduler(state: AgentState) -> Literal["planning", "scheduler", "finalize"]:
+    """Route the deterministic Scheduler loop without using model prose as control flow."""
+    if state.get("stop_reason"):
+        return "finalize"
+    plan = state.get("plan") or {}
+    subtasks = plan.get("subtasks") or []
+    if any(item.get("status") == "adjust" for item in subtasks):
+        if state.get("replan_count", 0) < MAX_REPLANS:
+            return "planning"
+        return "finalize"
+    if subtasks and all(item.get("status") in {"completed", "failed", "skipped"} for item in subtasks):
+        return "finalize"
+    if get_ready_subtasks(plan):
+        return "scheduler"
+    return "finalize"
+
+
 # ====================================================================
 # 构建增强版 Agent 图
 # ====================================================================
@@ -1319,37 +1820,16 @@ def decide_after_reflection(state: AgentState) -> Literal["planning", "skill_sel
 agent_workflow = StateGraph(AgentState)
 
 agent_workflow.add_node("planning", planning_node)
-agent_workflow.add_node("collaboration", collaboration_node)
-agent_workflow.add_node("skill_select", skill_select_node)
-agent_workflow.add_node("executor", executor_node)
-agent_workflow.add_node("tools", tool_executor_node)
-agent_workflow.add_node("reflection", reflection_node)
+agent_workflow.add_node("scheduler", scheduler_node)
 agent_workflow.add_node("finalize", finalize_node)
 
 agent_workflow.set_entry_point("planning")
 
-agent_workflow.add_edge("planning", "collaboration")
-
+agent_workflow.add_edge("planning", "scheduler")
 agent_workflow.add_conditional_edges(
-    "collaboration",
-    should_continue_plan,
-    {"skill_select": "skill_select", "finalize": "finalize"}
-)
-
-agent_workflow.add_edge("skill_select", "executor")
-
-agent_workflow.add_conditional_edges(
-    "executor",
-    should_continue_tools,
-    {"tools": "tools", "reflect": "reflection", "finalize": "finalize"}
-)
-
-agent_workflow.add_edge("tools", "executor")
-
-agent_workflow.add_conditional_edges(
-    "reflection",
-    decide_after_reflection,
-    {"planning": "planning", "skill_select": "skill_select", "finalize": "finalize"}
+    "scheduler",
+    route_after_scheduler,
+    {"planning": "planning", "scheduler": "scheduler", "finalize": "finalize"},
 )
 
 agent_workflow.add_edge("finalize", END)
@@ -1361,12 +1841,28 @@ agent_graph = agent_workflow.compile()
 # 对外接口
 # ====================================================================
 
-def run_agent(messages: List, session_id: str = "default") -> str:
+def run_agent(
+    messages: List,
+    session_id: str = "default",
+    runtime_allowed_tools: List[str] | None = None,
+) -> str:
     print("\n" + "█" * 60)
     print("█  Agent 系统启动")
     print("█" * 60)
     print(f"  输入消息数: {len(messages)}")
+    # 工作记忆属于单次 Run；ContextVar 负责并发隔离，这里负责顺序运行隔离。
+    agent_memory.clear_working()
     budget = RuntimeBudget.from_config()
+    default_runtime_tools = {tool.name for tool in DEFAULT_TOOLS}
+    for skill_info in skill_registry.list_all():
+        skill = skill_registry.get_by_name(skill_info.get("name"))
+        if skill:
+            default_runtime_tools.update(tool.name for tool in get_skill_tools(skill))
+    resolved_runtime_tools = (
+        [str(item) for item in runtime_allowed_tools]
+        if runtime_allowed_tools is not None
+        else sorted(default_runtime_tools)
+    )
     run_id = new_run_id()
     goal = ""
     if messages:
@@ -1409,6 +1905,13 @@ def run_agent(messages: List, session_id: str = "default") -> str:
         "trace_enabled": budget.trace_enabled,
         "stop_reason": "",
         "recent_tool_calls": [],
+        "run_context": {},
+        "task_results": {},
+        "artifacts": [],
+        "dispatch_batch": [],
+        "scheduler_epoch": 0,
+        "replan_count": 0,
+        "runtime_allowed_tools": resolved_runtime_tools,
     }
     record_trace(
         initial_state,
@@ -1417,6 +1920,8 @@ def run_agent(messages: List, session_id: str = "default") -> str:
         {
             "session_id": session_id,
             "run_id": run_id,
+            "architecture": "planner_scheduler_workers_v2",
+            "runtime_allowed_tools": resolved_runtime_tools,
             "budget": {
                 "max_steps": budget.max_steps,
                 "max_runtime_seconds": budget.max_runtime_seconds,
@@ -1425,6 +1930,14 @@ def run_agent(messages: List, session_id: str = "default") -> str:
                 "planner_parallelism": budget.planner_parallelism,
             },
         },
+    )
+    _record_reasoning_update(
+        initial_state,
+        "runtime",
+        "understand",
+        "建立本次执行上下文",
+        f"已创建隔离 Run，并加载 {len(resolved_runtime_tools)} 个本次允许使用的工具能力。",
+        next_action="读取会话交接与长期记忆，然后分析当前任务。",
     )
 
     try:

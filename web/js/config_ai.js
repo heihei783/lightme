@@ -124,7 +124,6 @@ async function init() {
 function bindStaticEvents() {
     $('toggle-rag').addEventListener('change', saveGeneralToggles);
     $('toggle-agent').addEventListener('change', saveGeneralToggles);
-    $('companion-interval').addEventListener('change', saveCompanionInterval);
     $('image-gen-probability').addEventListener('change', saveImageGenProbability);
     $('save-runtime-btn').addEventListener('click', saveRuntimeConfig);
 
@@ -178,7 +177,6 @@ function hydrateControls() {
     const config = { ...DEFAULT_RUNTIME, ...state.config };
     $('toggle-rag').checked = Boolean(config.rag_open);
     $('toggle-agent').checked = Boolean(config.agent_open);
-    $('companion-interval').value = config.companion_interval ?? 10;
     $('image-gen-probability').value = config.image_gen_probability ?? 0.08;
     $('agent-max-steps').value = config.agent_max_steps;
     $('agent-max-runtime').value = config.agent_max_runtime_seconds;
@@ -210,16 +208,6 @@ async function saveGeneralToggles() {
             rag_open: $('toggle-rag').checked,
             agent_open: $('toggle-agent').checked,
         }, '基础能力设置已保存');
-    } catch (error) {
-        showToast(error.message, 'error');
-    }
-}
-
-async function saveCompanionInterval() {
-    const value = readNumber('companion-interval', 3, 120);
-    if (value === null) return;
-    try {
-        await updateConfig({ companion_interval: value }, '陪伴间隔已保存');
     } catch (error) {
         showToast(error.message, 'error');
     }

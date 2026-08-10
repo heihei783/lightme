@@ -4,11 +4,16 @@ import unittest
 from app.agent.runtime import (
     TraceStore,
     allowed_tools_for_subtask,
+    build_reasoning_update,
+    build_execution_handoff,
     build_plan_state_graph,
     detect_tool_policy_violations,
     get_ready_subtasks,
+    format_handoff_context,
+    is_continuation_request,
     normalize_plan,
     repair_plan_for_capabilities,
+    sanitize_reasoning_text,
     score_plan_quality,
     should_replan,
     update_plan_after_subtask,
@@ -18,10 +23,29 @@ from app.agent.runtime import (
 
 
 class PlannerRuntimeTest(unittest.TestCase):
+    def test_public_reasoning_update_is_bounded_and_redacted(self):
+        payload = build_reasoning_update(
+            "decide",
+            "选择工具",
+            "调用接口，api_key=very-secret-value，Authorization: Bearer abc.def.ghi",
+            next_action="读取结果后验证",
+            subtask_id="task-1",
+        )
+        self.assertEqual(payload["visibility"], "public_summary")
+        self.assertEqual(payload["phase"], "decide")
+        self.assertNotIn("very-secret-value", payload["summary"])
+        self.assertNotIn("abc.def.ghi", payload["summary"])
+        self.assertIn("***", payload["summary"])
+        self.assertEqual(payload["subtask_id"], "task-1")
+
+    def test_reasoning_text_is_single_line(self):
+        self.assertEqual(sanitize_reasoning_text("第一行\n  第二行"), "第一行 第二行")
+
     def test_normalize_plan_adds_version_and_status(self):
         plan = normalize_plan(
             {
                 "goal": "demo",
+                "decision_summary": "先读取配置，再验证结果。",
                 "subtasks": [
                     {"id": 1, "desc": "first"},
                     {"id": 2, "desc": "second", "depends_on": [1]},
@@ -37,6 +61,7 @@ class PlannerRuntimeTest(unittest.TestCase):
         self.assertIn(plan["subtasks"][0]["task_type"], {"general", "read", "analyze"})
         self.assertIn(plan["subtasks"][0]["risk_level"], {"low", "medium", "high"})
         self.assertTrue(plan["subtasks"][0]["acceptance_checks"])
+        self.assertEqual(plan["decision_summary"], "先读取配置，再验证结果。")
 
     def test_validate_plan_detects_cycle(self):
         plan = {
@@ -77,6 +102,54 @@ class PlannerRuntimeTest(unittest.TestCase):
             self.assertEqual(trace["run"]["status"], "completed")
             self.assertEqual(len(trace["plans"]), 1)
             self.assertEqual(trace["events"][0]["payload"]["ok"], True)
+
+    def test_execution_handoff_preserves_auditable_context(self):
+        plan = normalize_plan(
+            {"goal": "inspect", "subtasks": [{"id": "a", "desc": "inspect file", "task_type": "read"}]},
+            goal="inspect",
+            complexity="medium",
+        )
+        plan["subtasks"][0].update(
+            {
+                "status": "completed",
+                "result": "found config at C:/project/config.json",
+                "worker": "research_worker",
+                "evidence": [
+                    {"kind": "tool_result", "source": "read_file_content", "summary": "config contains planner settings"}
+                ],
+                "tool_calls": [{"tool": "read_file_content", "args": {"file_path": "C:/project/config.json"}, "ok": True}],
+                "verifier": {"status": "completed", "issues": [], "passed_checks": ["result_is_non_empty"]},
+            }
+        )
+        handoff = build_execution_handoff(
+            run_id="run_handoff",
+            goal="inspect",
+            status="completed",
+            plan=plan,
+            final_output="done",
+            artifacts=[],
+        )
+        context = format_handoff_context([handoff])
+        self.assertIn("read_file_content", context)
+        self.assertIn("config contains planner settings", context)
+        self.assertIn("验收: completed", context)
+        self.assertIn("规划依据", context)
+
+    def test_handoffs_are_session_scoped_and_deleted_with_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TraceStore(db_path=f"{tmp}/trace.db", jsonl_dir=f"{tmp}/jsonl")
+            store.start_run("run_a", "session_a", "goal")
+            store.save_handoff("run_a", "session_a", {"goal": "goal", "status": "completed"})
+            self.assertEqual(len(store.get_session_handoffs("session_a")), 1)
+            self.assertEqual(store.get_session_handoffs("session_b"), [])
+            store.delete_session_data("session_a")
+            self.assertEqual(store.get_session_handoffs("session_a"), [])
+            self.assertIsNone(store.get_run("run_a"))
+
+    def test_continuation_detection_requires_explicit_reference(self):
+        self.assertTrue(is_continuation_request("继续执行刚才的计划"))
+        self.assertTrue(is_continuation_request("用上一个文件再试一次"))
+        self.assertFalse(is_continuation_request("给我讲一个笑话"))
 
     def test_plan_quality_scores_missing_expected_result(self):
         plan = normalize_plan(

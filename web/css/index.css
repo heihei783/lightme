@@ -254,7 +254,7 @@ body {
 
 .task-phase-track {
     display: grid;
-    grid-template-columns: repeat(5, minmax(46px, 1fr));
+    grid-template-columns: repeat(4, minmax(46px, 1fr));
     gap: 6px;
 }
 

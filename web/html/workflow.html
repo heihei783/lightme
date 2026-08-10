@@ -4,12 +4,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Planner-Executor 工作流地图</title>
+    <title>Planner-Scheduler-Worker 工作流地图</title>
     <link rel="stylesheet" href="../css/workflow.css">
+    <link rel="stylesheet" href="../css/companion-pages.css?v=20260809a">
+    <script src="../js/theme-bootstrap.js?v=20260809a"></script>
     <script>const API_BASE = 'http://127.0.0.1:8000';</script>
 </head>
 
-<body>
+<body data-page="workflow">
     <div class="workflow-page">
         <header class="workflow-header">
             <div class="workflow-brand">
@@ -17,7 +19,7 @@
                 <span class="brand-mark">LM</span>
                 <div>
                     <div class="workflow-kicker">AGENT CONTROL PLANE</div>
-                    <h1>Planner-Executor</h1>
+                    <h1>Planner-Scheduler-Worker</h1>
                 </div>
             </div>
             <div class="workflow-actions">
@@ -36,7 +38,7 @@
                     <span id="system-indicator" class="system-indicator"></span>
                     <span id="workflow-status">正在连接 Agent Runtime</span>
                 </div>
-                <p id="workflow-subtitle">查看任务如何被拆解、执行、验证和重新规划。</p>
+                <p id="workflow-subtitle">查看任务如何被拆解、按 DAG 调度、隔离执行、验证和重新规划。</p>
             </div>
             <div class="overview-metrics">
                 <div class="metric-item">
@@ -123,7 +125,7 @@
         </main>
     </div>
 
-    <script src="../js/workflow.js"></script>
+    <script src="../js/workflow.js?v=20260728e"></script>
 </body>
 
 </html>

@@ -6,9 +6,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LightMe 设置中心</title>
     <link rel="stylesheet" href="../css/config_ai.css">
+    <link rel="stylesheet" href="../css/companion-pages.css?v=20260809a">
+    <script src="../js/theme-bootstrap.js?v=20260809a"></script>
 </head>
 
-<body>
+<body data-page="settings">
     <div class="settings-shell">
         <aside class="settings-sidebar">
             <div class="settings-brand">
@@ -81,13 +83,10 @@
                     </div>
                     <div class="setting-row">
                         <div class="setting-copy">
-                            <strong>陪伴模式间隔</strong>
-                            <span>两次主动交互之间的最短等待时间。</span>
+                            <strong>屏幕读取策略</strong>
+                            <span>不再定时截屏；仅当语音内容确实需要当前画面时读取一帧。</span>
                         </div>
-                        <div class="input-with-unit">
-                            <input type="number" id="companion-interval" value="10" min="3" max="120">
-                            <span>秒</span>
-                        </div>
+                        <span class="setting-value-badge">AI 按需 · 单帧</span>
                     </div>
                     <div class="setting-row">
                         <div class="setting-copy">
