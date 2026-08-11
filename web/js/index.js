@@ -373,7 +373,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             </span>
                         </div>
                     </div>
-                    <a class="agent-process-trace-link" href="workflow.html">查看完整执行拓扑</a>
+                    <a class="agent-process-trace-link" href="workflow.html" target="_blank" rel="noopener">查看完整执行拓扑</a>
                 </div>
             </section>
         `;
@@ -427,6 +427,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             row.querySelector('.agent-process-elapsed').textContent = `${metrics.step_count || 0} steps`;
             const link = row.querySelector('.agent-process-trace-link');
             link.href = `workflow.html?run_id=${encodeURIComponent(run.run_id)}`;
+            link.target = '_blank';
+            link.rel = 'noopener';
             link.textContent = `查看完整执行拓扑 · ${shortRunId(run.run_id)}`;
             chatWindow.appendChild(row);
             renderAgentTrace({ row, runId: run.run_id, lastTrace: trace }, trace);
@@ -451,6 +453,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const encoded = encodeURIComponent(runId);
         const link = process.row.querySelector('.agent-process-trace-link');
         link.href = `workflow.html?run_id=${encoded}`;
+        link.target = '_blank';
+        link.rel = 'noopener';
         link.textContent = `查看完整执行拓扑 · ${shortRunId(runId)}`;
         queueAgentTracePoll(80);
     }
@@ -2266,12 +2270,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         return div.innerHTML;
     }
 
-    // 终端页面跳转: pywebview 内跳转，浏览器开新窗口
+    // 陪伴模式依赖当前页面持有的麦克风和屏幕共享流；新标签页保留原页面即可不中断陪伴。
     window.openTerminal = function () {
-        if (typeof window.pywebview !== 'undefined') {
-            window.location.href = 'terminal.html';
-        } else {
-            window.open('terminal.html', '_blank');
-        }
+        window.open('terminal.html', '_blank', 'noopener');
     };
 });

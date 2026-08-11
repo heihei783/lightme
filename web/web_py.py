@@ -742,14 +742,15 @@ async def get_tools_and_skills():
 # ============================= 桌面宠物 =============================
 
 @app.post("/desktop-pet/open")
-async def open_desktop_pet():
+async def open_desktop_pet(request: Request):
     """启动独立的置顶 Live2D 桌面宠物窗口。"""
     global _desktop_pet_process
     with _desktop_pet_lock:
         if _desktop_pet_process and _desktop_pet_process.poll() is None:
             return {"status": "success", "msg": "桌面宠物已经在运行"}
 
-        pet_url = "http://127.0.0.1:8000/web/html/desktop_pet.html"
+        # 使用当前请求的地址，避免 Web 模式使用非 8000 端口时宠物窗口打开到错误页面。
+        pet_url = str(request.base_url).rstrip("/") + "/web/html/desktop_pet.html"
         try:
             _desktop_pet_process = subprocess.Popen(
                 [sys.executable, "-m", "gui.desktop_pet", pet_url],
@@ -759,6 +760,19 @@ async def open_desktop_pet():
             )
         except Exception as e:
             return {"status": "error", "msg": f"桌面宠物启动失败: {e}"}
+
+        process = _desktop_pet_process
+
+    # pywebview 进程启动后还需要初始化 GUI 后端；不能仅凭 Popen 返回就报告成功。
+    await asyncio.sleep(0.45)
+    if process.poll() is not None:
+        with _desktop_pet_lock:
+            if _desktop_pet_process is process:
+                _desktop_pet_process = None
+        return {
+            "status": "error",
+            "msg": "桌面宠物窗口启动失败，请确认已安装桌面窗口依赖并从桌面环境启动。",
+        }
 
     return {"status": "success", "msg": "桌面宠物已启动"}
 

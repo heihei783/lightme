@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="../css/workbench.css?v=20260803b">
     <link rel="stylesheet" href="../css/companion-ui.css?v=20260809a">
     <script src="../js/theme-bootstrap.js?v=20260809a"></script>
-    <script>const API_BASE = 'http://127.0.0.1:8000';</script>
+    <script>const API_BASE = window.location.origin;</script>
     <script src="../js/live2d-sdk.js"></script>
     <script src="../js/LAppDefine.js"></script>
 </head>
@@ -230,9 +230,9 @@
                     </div>
                     <div class="module-grid">
                         <button id="tools-btn" type="button" title="工具与技能"><span aria-hidden="true">✣</span><strong>工具技能</strong><small>Tools</small></button>
-                        <button id="workflow-btn" type="button" title="Planner-Executor 工作流" onclick="window.location.href='workflow.html'"><span aria-hidden="true">⌁</span><strong>执行流程</strong><small>Workflow</small></button>
+                        <button id="workflow-btn" type="button" title="Planner-Executor 工作流" onclick="window.open('workflow.html', '_blank', 'noopener')"><span aria-hidden="true">⌁</span><strong>执行流程</strong><small>Workflow</small></button>
                         <button id="term-btn" type="button" title="Agent 终端" onclick="openTerminal()"><span aria-hidden="true">›_</span><strong>运行终端</strong><small>Trace</small></button>
-                        <button id="config-btn" type="button" title="AI 配置" onclick="window.location.href='config_ai.html'"><span aria-hidden="true">⚙</span><strong>高级设置</strong><small>Config</small></button>
+                        <button id="config-btn" type="button" title="AI 配置" onclick="window.open('config_ai.html', '_blank', 'noopener')"><span aria-hidden="true">⚙</span><strong>高级设置</strong><small>Config</small></button>
                     </div>
                 </section>
             </div>
