@@ -18,7 +18,8 @@ def main():
         shadow=False,
         on_top=True,
         transparent=True,
-        background_color="#00000000",
+        # pywebview 仅接受六位 RGB 色值；透明效果由 transparent=True 控制。
+        background_color="#000000",
     )
     webview.start(debug=False)
 
