@@ -4,76 +4,284 @@ body {
     height: 100%;
     margin: 0;
     overflow: hidden;
-    background: rgba(0, 0, 0, 0);
+    background-color: rgba(0, 0, 0, 0) !important;
+    background-image: none !important;
     font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
 }
 
 .pet-shell {
     position: fixed;
     inset: 0;
-    background: transparent;
+    overflow: hidden;
+    background: transparent !important;
     user-select: none;
+}
+
+.pet-stage {
+    position: absolute;
+    inset: 12px 0 45px;
+    overflow: hidden;
 }
 
 #live2d-canvas {
     position: absolute;
     left: 50%;
-    bottom: -10px;
-    width: 88%;
-    height: 88%;
+    bottom: -76px;
+    width: 318px;
+    height: 476px;
     transform: translateX(-50%);
-    object-fit: contain;
     cursor: pointer;
+    touch-action: none;
+}
+
+/* 22/33 have large transparent margins inside their model canvas, while the
+   other models fill almost all of it. Each family therefore needs its own
+   compact desktop fit. */
+body[data-character="康娜"] #live2d-canvas {
+    bottom: 0;
+    width: 190px;
+    height: 285px;
+}
+
+body[data-character="血小板"] #live2d-canvas {
+    bottom: -8px;
+    width: 200px;
+    height: 300px;
+}
+
+body[data-character="纱雾"] #live2d-canvas {
+    bottom: -7px;
+    width: 198px;
+    height: 297px;
+}
+
+body[data-character="小埋"] #live2d-canvas {
+    bottom: -12px;
+    width: 204px;
+    height: 306px;
 }
 
 .live2d-msg-box {
     position: absolute;
     left: 50%;
-    top: 42px;
+    top: 18px;
     transform: translateX(-50%);
-    max-width: 170px;
-    padding: 6px 10px;
-    border: 1px solid rgba(255, 183, 197, 0.75);
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.86);
-    color: #ff7675;
-    font-size: 12px;
+    z-index: 8;
+    width: max-content;
+    max-width: 178px;
+    max-height: 74px;
+    overflow: hidden;
+    padding: 7px 10px;
+    border: 1px solid rgba(255, 155, 203, .48);
+    border-radius: 13px 13px 13px 4px;
+    color: #5c3453;
+    background: rgba(255, 249, 253, .94);
+    box-shadow: 0 8px 24px rgba(50, 22, 46, .16);
+    font-size: 11px;
+    line-height: 1.45;
     text-align: center;
     opacity: 0;
-    transition: opacity 0.25s;
+    transition: opacity .2s, transform .2s;
     pointer-events: none;
 }
 
 .live2d-msg-box.show {
     opacity: 1;
+    transform: translateX(-50%) translateY(3px);
+}
+
+.pet-drag-handle {
+    position: absolute;
+    top: 3px;
+    left: 50%;
+    z-index: 20;
+    width: 54px;
+    height: 14px;
+    transform: translateX(-50%);
+    cursor: grab;
+    touch-action: none;
+}
+
+.pet-drag-handle:active { cursor: grabbing; }
+
+.pet-drag-handle span {
+    position: absolute;
+    top: 5px;
+    left: 50%;
+    width: 24px;
+    height: 3px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, .74);
+    box-shadow: 0 1px 5px rgba(40, 20, 38, .18);
+    transform: translateX(-50%);
 }
 
 .pet-toolbar {
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: 4px;
+    right: 5px;
     display: flex;
-    gap: 6px;
-    z-index: 10;
-    opacity: 0;
-    transition: opacity 0.2s;
+    z-index: 22;
+    gap: 4px;
+    opacity: .25;
+    transition: opacity .2s;
 }
 
-.pet-shell:hover .pet-toolbar {
-    opacity: 1;
-}
+.pet-shell:hover .pet-toolbar { opacity: 1; }
 
 .pet-toolbar button {
-    height: 24px;
-    padding: 0 8px;
-    border: 1px solid rgba(255, 255, 255, 0.55);
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.72);
-    color: #666;
-    font-size: 11px;
+    width: 23px;
+    height: 23px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, .58);
+    border-radius: 50%;
+    color: #65485f;
+    background: rgba(255, 255, 255, .82);
+    box-shadow: 0 4px 12px rgba(38, 21, 36, .12);
+    font-size: 12px;
     cursor: pointer;
 }
 
-.pet-toolbar button:hover {
-    background: rgba(255, 255, 255, 0.92);
+.pet-toolbar button:hover { background: #fff; }
+
+.pet-action-dock {
+    position: absolute;
+    right: 21px;
+    bottom: 8px;
+    left: 21px;
+    z-index: 18;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 4px;
+    border: 1px solid rgba(255, 255, 255, .55);
+    border-radius: 15px;
+    background: rgba(255, 255, 255, .76);
+    box-shadow: 0 8px 24px rgba(48, 24, 44, .16);
+    backdrop-filter: blur(14px);
+}
+
+.pet-action-dock button {
+    display: flex;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 11px;
+    color: #674f63;
+    background: transparent;
+    cursor: pointer;
+    transition: color .18s, background .18s, transform .18s;
+}
+
+.pet-action-dock button:hover {
+    color: #c44785;
+    background: rgba(255, 139, 196, .12);
+    transform: translateY(-1px);
+}
+
+.pet-action-dock button.active {
+    color: #fff;
+    background: linear-gradient(135deg, #ff83bd, #a98cf4);
+}
+
+.pet-action-dock small { font-size: 10px; font-weight: 700; }
+
+.voice-dot {
+    width: 7px;
+    height: 7px;
+    border: 2px solid currentColor;
+    border-radius: 50%;
+}
+
+#pet-voice-btn.listening .voice-dot {
+    border-color: #fff;
+    background: #fff;
+    animation: voice-pulse 1s ease-in-out infinite;
+}
+
+#pet-voice-btn.capturing .voice-dot {
+    border-color: #fff;
+    border-radius: 2px;
+    background: #fff;
+    animation: voice-pulse .7s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+    50% { box-shadow: 0 0 0 5px rgba(255, 255, 255, 0); transform: scale(.8); }
+}
+
+.pet-chat-panel {
+    position: absolute;
+    right: 8px;
+    bottom: 49px;
+    left: 8px;
+    z-index: 17;
+    display: flex;
+    gap: 5px;
+    padding: 5px;
+    border: 1px solid rgba(255, 255, 255, .66);
+    border-radius: 15px;
+    background: rgba(255, 250, 253, .94);
+    box-shadow: 0 10px 28px rgba(48, 24, 44, .18);
+    opacity: 0;
+    transform: translateY(8px) scale(.98);
+    pointer-events: none;
+    transition: opacity .18s, transform .18s;
+}
+
+.pet-chat-panel.open {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    pointer-events: auto;
+}
+
+.pet-chat-panel input {
+    min-width: 0;
+    flex: 1;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid rgba(221, 142, 183, .28);
+    border-radius: 11px;
+    outline: none;
+    color: #5d4357;
+    background: rgba(255, 255, 255, .86);
+    font: 11px/1.2 inherit;
+    user-select: text;
+}
+
+.pet-chat-panel input:focus {
+    border-color: rgba(223, 91, 158, .52);
+    box-shadow: 0 0 0 3px rgba(255, 117, 183, .1);
+}
+
+.pet-chat-panel button {
+    width: 31px;
+    height: 31px;
+    padding: 0;
+    border: 0;
+    border-radius: 10px;
+    color: #fff;
+    background: linear-gradient(135deg, #ff83bd, #a98cf4);
+    cursor: pointer;
+}
+
+.pet-chat-panel button:disabled { opacity: .5; cursor: wait; }
+
+.pet-status {
+    position: absolute;
+    right: 0;
+    bottom: 1px;
+    left: 0;
+    z-index: 16;
+    overflow: hidden;
+    color: rgba(255, 255, 255, .86);
+    font-size: 8px;
+    text-align: center;
+    text-shadow: 0 1px 4px rgba(28, 16, 28, .58);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
 }

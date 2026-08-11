@@ -19,7 +19,6 @@ data/*
 !data/eval/
 !data/eval/agent_eval_tasks.json
 data/eval/latest_results.*
-up.bat
 live2d
 # Midscene.js bridge dependencies
 app/agent/skill_code/midscene/bridge/node_modules/

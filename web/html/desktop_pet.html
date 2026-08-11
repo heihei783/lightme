@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LightMe 桌面宠物</title>
-    <link rel="stylesheet" href="../css/desktop_pet.css">
+    <link rel="stylesheet" href="../css/desktop_pet.css?v=20260811b">
     <script>const API_BASE = window.location.origin;</script>
     <script src="../js/live2d-sdk.js"></script>
     <script src="../js/LAppDefine.js"></script>
@@ -13,16 +13,39 @@
 
 <body>
     <div class="pet-shell">
-        <div class="pet-toolbar">
-            <button id="pet-char-btn" title="切换角色">切换</button>
-            <button id="pet-close-btn" title="关闭">关闭</button>
+        <div class="pet-drag-handle" title="拖动桌宠" aria-label="拖动桌宠">
+            <span></span>
         </div>
-        <canvas id="live2d-canvas" data-model-width="360" data-model-height="540"></canvas>
-        <div id="live2d-msg-box" class="live2d-msg-box"></div>
+        <div class="pet-toolbar">
+            <button id="pet-outfit-btn" type="button" title="切换服装" aria-label="切换服装">装</button>
+            <button id="pet-char-btn" type="button" title="切换角色" aria-label="切换角色">换</button>
+            <button id="pet-close-btn" type="button" title="关闭" aria-label="关闭">×</button>
+        </div>
+
+        <div class="pet-stage">
+            <canvas id="live2d-canvas" data-model-width="360" data-model-height="540"></canvas>
+            <div id="live2d-msg-box" class="live2d-msg-box" role="status" aria-live="polite"></div>
+        </div>
+
+        <form id="pet-chat-panel" class="pet-chat-panel" aria-hidden="true">
+            <input id="pet-chat-input" type="text" maxlength="500" autocomplete="off"
+                placeholder="想和 LightMe 说什么？" aria-label="输入对话内容">
+            <button id="pet-send-btn" type="submit" title="发送">➤</button>
+        </form>
+
+        <div class="pet-action-dock" role="group" aria-label="桌宠陪伴功能">
+            <button id="pet-chat-btn" type="button" aria-expanded="false" title="打字对话">
+                <span aria-hidden="true">⌨</span><small>打字</small>
+            </button>
+            <button id="pet-voice-btn" type="button" aria-pressed="false" title="开启语音陪伴">
+                <span class="voice-dot" aria-hidden="true"></span><small>语音</small>
+            </button>
+        </div>
+        <div id="pet-status" class="pet-status" aria-live="polite">随时陪着你</div>
     </div>
 
     <script src="../js/live2d-ctrl.js"></script>
-    <script src="../js/desktop_pet.js"></script>
+    <script src="../js/desktop_pet.js?v=20260811d"></script>
 </body>
 
 </html>

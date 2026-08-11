@@ -104,6 +104,18 @@ const Live2DCtrl = (() => {
         const role = roleData[charIdx];
         const modelPath = role.path + (role.outfits[outfitIdx] || role.outfits[0]);
 
+        // Compact surfaces can fit each model independently instead of
+        // forcing every character into the same oversized crop.
+        window.dispatchEvent(new CustomEvent('lightme:character-change', {
+            detail: {
+                index: charIdx,
+                name: role.name,
+                outfitIndex: outfitIdx,
+                outfitCount: role.outfits.length,
+                modelPath,
+            },
+        }));
+
         if (window.loadlive2d) {
             currentModel = null;
             globalLipSyncValue = 0;
