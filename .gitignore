@@ -28,3 +28,5 @@ live2d
 app/agent/skill_code/midscene/bridge/node_modules/
 app/agent/skill_code/midscene/bridge/midscene_run/
 data/browser_screenshots/
+.agents/
+.ruff_cache/
