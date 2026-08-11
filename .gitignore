@@ -21,9 +21,6 @@ data/*
 data/eval/latest_results.*
 up.bat
 live2d
-作业pdf
-2026红岩网校工作站AI开发与应用部 Agent 方向学习指南.pdf
-红岩网校.md
 # Midscene.js bridge dependencies
 app/agent/skill_code/midscene/bridge/node_modules/
 app/agent/skill_code/midscene/bridge/midscene_run/
