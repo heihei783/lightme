@@ -25,6 +25,7 @@ const MODEL_LABELS = {
     embedding: '嵌入',
     vision: '视觉',
     image_gen: '生图',
+    tts: '语音',
 };
 
 function $(id) {
@@ -124,7 +125,6 @@ async function init() {
 function bindStaticEvents() {
     $('toggle-rag').addEventListener('change', saveGeneralToggles);
     $('toggle-agent').addEventListener('change', saveGeneralToggles);
-    $('companion-interval').addEventListener('change', saveCompanionInterval);
     $('image-gen-probability').addEventListener('change', saveImageGenProbability);
     $('save-runtime-btn').addEventListener('click', saveRuntimeConfig);
 
@@ -178,7 +178,6 @@ function hydrateControls() {
     const config = { ...DEFAULT_RUNTIME, ...state.config };
     $('toggle-rag').checked = Boolean(config.rag_open);
     $('toggle-agent').checked = Boolean(config.agent_open);
-    $('companion-interval').value = config.companion_interval ?? 10;
     $('image-gen-probability').value = config.image_gen_probability ?? 0.08;
     $('agent-max-steps').value = config.agent_max_steps;
     $('agent-max-runtime').value = config.agent_max_runtime_seconds;
@@ -210,16 +209,6 @@ async function saveGeneralToggles() {
             rag_open: $('toggle-rag').checked,
             agent_open: $('toggle-agent').checked,
         }, '基础能力设置已保存');
-    } catch (error) {
-        showToast(error.message, 'error');
-    }
-}
-
-async function saveCompanionInterval() {
-    const value = readNumber('companion-interval', 3, 120);
-    if (value === null) return;
-    try {
-        await updateConfig({ companion_interval: value }, '陪伴间隔已保存');
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -280,6 +269,7 @@ function getPresetKey(type) {
         embedding: 'EMBEDDING_MODEL_PRESETS',
         vision: 'VISION_MODEL_PRESETS',
         image_gen: 'IMAGE_GEN_MODEL_PRESETS',
+        tts: 'TTS_MODEL_PRESETS',
     }[type] || '';
 }
 
@@ -289,11 +279,16 @@ function getActiveKeys(type) {
         embedding: { name: 'EMBEDDING_MODEL_NAME' },
         vision: { name: 'VISION_MODEL_NAME' },
         image_gen: { name: 'IMAGE_GEN_MODEL_NAME' },
+        tts: { name: 'TTS_MODEL_NAME' },
     }[type] || {};
 }
 
 function getActiveName(type) {
     return state.config[getActiveKeys(type).name] || '';
+}
+
+function getActiveProvider(type) {
+    return type === 'tts' ? (state.config.TTS_MODEL_PROVIDER || 'edge_tts') : '';
 }
 
 function switchModelTab(type) {
@@ -315,8 +310,11 @@ function renderTab(type) {
     if (!container) return;
     const presets = state.config[getPresetKey(type)] || [];
     const activeName = getActiveName(type);
+    const activeProvider = getActiveProvider(type);
+    const modelLabel = type === 'tts' ? 'Voice / Reference' : 'Model';
+    const endpointLabel = type === 'tts' ? 'TTS Endpoint' : 'Endpoint';
     const rows = presets.map((preset, index) => {
-        const isActive = preset.model_name === activeName;
+        const isActive = preset.model_name === activeName && (type !== 'tts' || (preset.provider || 'fish_audio') === activeProvider);
         return `
             <div class="preset-item">
                 <div class="preset-main">
@@ -324,8 +322,8 @@ function renderTab(type) {
                     <span class="info"><span>${escapeHtml(preset.provider || type)}</span></span>
                 </div>
                 <span class="info">
-                    <span>Model · ${escapeHtml(preset.model_name || '-')}</span>
-                    <span>Endpoint · ${escapeHtml(preset.base_url || '-')}</span>
+                    <span>${modelLabel} · ${escapeHtml(preset.model_name || '-')}</span>
+                    <span>${endpointLabel} · ${escapeHtml(preset.base_url || '-')}</span>
                 </span>
                 <span class="preset-actions">
                     ${isActive ? '' : `<button class="btn btn-switch" type="button" data-model-action="switch" data-index="${index}" data-type="${type}">切换</button>`}
@@ -335,6 +333,27 @@ function renderTab(type) {
             </div>
         `;
     }).join('');
+    if (type === 'tts') {
+        const edgeActive = activeProvider === 'edge_tts';
+        const edgeRow = `
+            <div class="preset-item builtin-preset">
+                <div class="preset-main">
+                    <span class="name">EdgeTTS 内置服务${edgeActive ? '<span class="active-badge">CURRENT</span>' : '<span class="builtin-badge">内置</span>'}</span>
+                    <span class="info"><span>edge_tts</span></span>
+                </div>
+                <span class="info">
+                    <span>音色 · 首页内置 8 个可选音色</span>
+                    <span>无需 API Key 或 Endpoint</span>
+                </span>
+                <span class="preset-actions">
+                    ${edgeActive ? '' : '<button class="btn btn-switch" type="button" data-model-action="switch-edge" data-type="tts">使用 EdgeTTS</button>'}
+                </span>
+            </div>
+        `;
+        container.innerHTML = `${edgeRow}${rows || '<div class="resource-empty">当前还没有 FishAudio 音色。</div>'}
+            <button class="btn-add" type="button" data-model-action="add" data-index="-1" data-type="tts">添加 FishAudio 音色</button>`;
+        return;
+    }
     container.innerHTML = `${rows || '<div class="resource-empty">当前类型还没有模型预设。</div>'}
         <button class="btn-add" type="button" data-model-action="add" data-index="-1" data-type="${type}">添加${MODEL_LABELS[type]}模型预设</button>`;
 }
@@ -346,8 +365,32 @@ function handleModelListAction(event) {
     const index = Number(button.dataset.index);
     const action = button.dataset.modelAction;
     if (action === 'switch') switchPreset(type, index, button);
+    if (action === 'switch-edge') switchEdgeTTS(button);
     if (action === 'edit' || action === 'add') openModelModal(type, index);
     if (action === 'delete') deletePreset(type, index, button);
+}
+
+async function switchEdgeTTS(button) {
+    setButtonBusy(button, true, '切换中');
+    const preset = {
+        name: 'EdgeTTS 内置服务',
+        model_name: 'zh-CN-XiaoyiNeural',
+        provider: 'edge_tts',
+    };
+    try {
+        await requestJson('/config/switch', jsonRequest('POST', { type: 'tts', preset }));
+        const data = await requestJson('/config');
+        state.config = data.config || state.config;
+        localStorage.setItem('tts_voice', JSON.stringify({
+            voice: preset.model_name,
+            provider: preset.provider,
+        }));
+        renderTab('tts');
+        showToast('已切换到 EdgeTTS 内置服务');
+    } catch (error) {
+        setButtonBusy(button, false);
+        showToast(error.message, 'error');
+    }
 }
 
 async function switchPreset(type, index, button) {
@@ -358,6 +401,12 @@ async function switchPreset(type, index, button) {
         await requestJson('/config/switch', jsonRequest('POST', { type, preset }));
         const data = await requestJson('/config');
         state.config = data.config || state.config;
+        if (type === 'tts') {
+            localStorage.setItem('tts_voice', JSON.stringify({
+                voice: preset.model_name,
+                provider: preset.provider || 'edge_tts',
+            }));
+        }
         renderTab(type);
         showToast(`已切换到 ${preset.name || preset.model_name}`);
     } catch (error) {
@@ -370,13 +419,24 @@ function openModelModal(type, index) {
     state.currentModelType = type;
     state.editingPresetIndex = index;
     const preset = index >= 0 ? (state.config[getPresetKey(type)] || [])[index] || {} : {};
-    $('model-modal-title').textContent = index >= 0 ? '编辑模型预设' : '添加模型预设';
+    const presetTypeLabel = type === 'tts' ? '语音预设' : '模型预设';
+    $('model-modal-title').textContent = index >= 0 ? `编辑${presetTypeLabel}` : `添加${presetTypeLabel}`;
     $('model-modal-delete').hidden = index < 0;
+    $('model-modal-delete').style.display = index < 0 ? 'none' : '';
     $('modal-name').value = preset.name || '';
+    $('modal-name').placeholder = type === 'tts' ? '例如 小艺 EdgeTTS' : '例如 DeepSeek V4';
+    $('modal-model-name-label').textContent = type === 'tts' ? '音色 / Reference ID' : '模型名称';
+    $('modal-base-url-label').textContent = type === 'tts' ? 'TTS Endpoint' : 'Base URL';
+    $('modal-model-name').placeholder = type === 'tts' ? '例如 zh-CN-XiaoyiNeural 或 Fish Reference ID' : '例如 deepseek-v4-flash';
+    $('modal-provider').placeholder = type === 'tts' ? 'edge_tts 或 fish_audio' : '例如 deepseek';
     $('modal-model-name').value = preset.model_name || '';
     $('modal-api-key').value = preset.api_key || '';
     $('modal-base-url').value = preset.base_url || '';
     $('modal-provider').value = preset.provider || '';
+    if (type === 'tts' && index < 0) {
+        $('modal-provider').value = 'fish_audio';
+        $('modal-base-url').value = state.config.TTS_MODEL_URL || 'https://api.rubia.top/v1/tts';
+    }
     openModal('model-modal', 'modal-name');
 }
 
@@ -385,7 +445,7 @@ async function saveCurrentPreset() {
     const name = $('modal-name').value.trim();
     const modelName = $('modal-model-name').value.trim();
     if (!name || !modelName) {
-        showToast('预设名称和模型名称不能为空', 'error');
+        showToast(type === 'tts' ? '预设名称和音色 ID 不能为空' : '预设名称和模型名称不能为空', 'error');
         (!name ? $('modal-name') : $('modal-model-name')).focus();
         return;
     }
@@ -488,6 +548,7 @@ function openPersonalityModal(index) {
     const preset = index >= 0 ? state.personalities.presets[index] || {} : {};
     $('personality-modal-title').textContent = index >= 0 ? '编辑人格预设' : '添加人格预设';
     $('personality-modal-delete').hidden = index < 0;
+    $('personality-modal-delete').style.display = index < 0 ? 'none' : '';
     $('personality-name').value = preset.name || '';
     $('personality-content').value = preset.content || '';
     openModal('personality-modal', 'personality-name');

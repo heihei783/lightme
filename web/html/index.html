@@ -8,30 +8,60 @@
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🤖</text></svg>">
     <link rel="stylesheet" href="../css/index.css?v=20260728d">
-    <link rel="stylesheet" href="../css/workbench.css?v=20260728d">
-    <script>const API_BASE = 'http://127.0.0.1:8000';</script>
+    <link rel="stylesheet" href="../css/workbench.css?v=20260812a">
+    <link rel="stylesheet" href="../css/companion-ui.css?v=20260812a">
+    <script src="../js/theme-bootstrap.js?v=20260809a"></script>
+    <script>const API_BASE = window.location.origin;</script>
     <script src="../js/live2d-sdk.js"></script>
     <script src="../js/LAppDefine.js"></script>
 </head>
 
-<body>
+<body data-page="companion" data-background="aurora">
+    <div class="page-atmosphere" aria-hidden="true">
+        <span class="atmosphere-orb orb-one"></span>
+        <span class="atmosphere-orb orb-two"></span>
+        <span class="atmosphere-grid"></span>
+    </div>
     <div class="container">
         <div class="sidebar">
             <div class="sidebar-header">
                 <div class="brand-lockup" aria-label="LightMe Agent Workspace">
-                    <span class="brand-mark">LM</span>
+                    <span class="brand-mark"><i></i>LM</span>
                     <span>
                         <strong>LightMe</strong>
-                        <small>Agent Workspace</small>
                     </span>
                 </div>
-                <button id="new-chat-btn"><span aria-hidden="true">+</span> 新建任务</button>
+                <button id="new-chat-btn"><span aria-hidden="true">＋</span> 开启新对话 <kbd>⌘ N</kbd></button>
             </div>
-            <div class="sidebar-label">最近任务</div>
+            <div class="sidebar-label"><span>心情记忆</span></div>
             <div id="session-list" class="session-list"></div>
+            <div class="sidebar-footer">
+                <div class="memory-pulse" aria-hidden="true"><span></span><span></span><span></span></div>
+                <div>
+                    <strong>陪伴记忆已连接</strong>
+                </div>
+            </div>
         </div>
 
         <div class="live2d-side" id="live2d-container">
+            <div class="companion-stage" aria-hidden="true">
+                <span class="stage-halo"></span>
+                <span class="stage-ring ring-one"></span>
+                <span class="stage-ring ring-two"></span>
+                <span class="stage-platform"></span>
+            </div>
+            <div class="companion-label">
+                <span class="companion-live"><i></i></span>
+                <strong>和你待在一起</strong>
+            </div>
+            <div id="immersive-voice-hud" class="immersive-voice-hud" data-state="idle" aria-live="polite">
+                <span class="voice-orb" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="voice-hud-copy">
+                    <strong id="voice-hud-status">等待开启沉浸陪伴</strong>
+                    <small id="voice-hud-transcript">可以随时说话，也可以打断我</small>
+                </span>
+                <span id="screen-access-state" class="screen-access-state" title="屏幕读取状态">屏幕未连接</span>
+            </div>
             <canvas id="live2d-canvas"></canvas>
             <div id="live2d-msg-box" class="live2d-msg-box"></div>
             <div class="live2d-controls">
@@ -50,25 +80,15 @@
         <div class="chat-side">
             <div class="header">
                 <div class="header-title">
-                    <span class="header-eyebrow">ACTIVE SESSION</span>
                     <h2 id="current-title">LightMe System</h2>
                 </div>
                 <div class="header-right">
-                    <select id="tts-voice-select" title="切换TTS语音" class="header-select"></select>
-                    <button id="tts-mute-btn" title="关闭语音">
-                        <img src="/images/声音.png" alt="声音开关">
+                    <span class="connection-chip"><span class="status-dot"></span>陪伴中</span>
+                    <button id="control-center-btn" class="control-center-btn" type="button" aria-haspopup="dialog" aria-controls="control-center" aria-expanded="false">
+                        <span class="control-button-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+                        <span>控制舱</span>
+                        <kbd>⌘ K</kbd>
                     </button>
-                    <button id="companion-btn" title="AI 陪伴 - 截图给 AI 看看你的屏幕">
-                        <img src="/images/视觉设置.png" alt="AI 陪伴">
-                    </button>
-                    <button id="desktop-pet-btn" title="启动桌面宠物">桌宠</button>
-                    <button id="tools-btn" title="工具 & 技能">🛠</button>
-                    <button id="workflow-btn" title="Planner-Executor 工作流" onclick="window.location.href='workflow.html'">流程</button>
-                    <button id="term-btn" title="Agent 终端" onclick="openTerminal()">
-                        <img src="/images/terminal-line.png" alt="Agent 终端">
-                    </button>
-                    <button id="config-btn" title="AI 配置" onclick="window.location.href='config_ai.html'">⚙️</button>
-                    <span class="status-dot"></span>
                 </div>
             </div>
 
@@ -80,38 +100,141 @@
                     </div>
                     <div id="task-phase-track" class="task-phase-track">
                         <span data-node="planning">规划</span>
-                        <span data-node="skill_select">技能</span>
-                        <span data-node="executor">执行</span>
-                        <span data-node="reflection">评审</span>
+                        <span data-node="scheduler">调度</span>
+                        <span data-node="workers">执行</span>
                         <span data-node="finalize">汇总</span>
                     </div>
                 </div>
                 <div class="task-meter-stats">
-                    <span><b id="task-elapsed">0.0s</b><small>耗时</small></span>
-                    <span><b id="task-tokens">0</b><small>tokens</small></span>
-                    <span><b id="task-steps">0</b><small>steps</small></span>
-                    <span><b id="task-progress">0/0</b><small>子任务</small></span>
+                    <span><small>用时</small><b id="task-elapsed">0.0s</b></span>
+                    <span><small>任务进度</small><b id="task-progress">0/0</b></span>
                 </div>
             </div>
 
             <div id="chat-window"></div>
 
-            <div id="image-preview-row" style="display:none;">
-                <img id="image-preview" src="" alt="预览">
-                <button id="remove-img-btn" title="移除图片">✖</button>
-            </div>
-            <div class="input-area">
-                <button id="upload-img-btn" title="上传图片">
-                    <img src="/images/图片.png" alt="上传图片">
-                </button>
-                <input type="file" id="image-input" accept="image/*" style="display:none;">
-                <input type="text" id="user-input" placeholder="输入消息..." autocomplete="off">
-                <button id="send-btn">发送</button>
+            <div class="composer-shell">
+                <div id="image-preview-row" style="display:none;">
+                    <img id="image-preview" src="" alt="预览">
+                    <button id="remove-img-btn" title="移除图片">✖</button>
+                </div>
+                <div class="input-area">
+                    <button id="upload-img-btn" title="发送图片" aria-label="发送图片">
+                        <img src="/images/图片.png" alt="">
+                    </button>
+                    <input type="file" id="image-input" accept="image/*" style="display:none;">
+                    <input type="text" id="user-input" placeholder="想和 LightMe 说些什么…" autocomplete="off">
+                    <button id="send-btn"><span>发送</span><i aria-hidden="true">↗</i></button>
+                </div>
+                <div class="composer-meta">
+                    <span><i class="privacy-dot"></i> 对话仅保存在你的设备</span>
+                    <span><kbd>Enter</kbd> 发送</span>
+                </div>
             </div>
         </div>
     </div>
 
     <input type="file" id="avatar-file-input" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none;">
+
+    <div id="control-center-overlay" class="control-center-overlay" aria-hidden="true">
+        <button id="control-center-backdrop" class="control-center-backdrop" type="button" aria-label="关闭控制舱"></button>
+        <aside id="control-center" class="control-center" role="dialog" aria-modal="true" aria-labelledby="control-center-title">
+            <div class="control-center-head">
+                <div>
+                    <h2 id="control-center-title">LightMe 控制舱</h2>
+                    <p>把陪伴空间调成你喜欢的样子。</p>
+                </div>
+                <button id="control-center-close" class="panel-close-btn" type="button" aria-label="关闭控制舱">×</button>
+            </div>
+
+            <div class="control-center-scroll">
+                <section class="control-section" aria-labelledby="appearance-title">
+                    <div class="control-section-title">
+                        <span class="section-glyph" aria-hidden="true">◐</span>
+                        <div><h3 id="appearance-title">界面主题</h3></div>
+                    </div>
+                    <div class="theme-segment" data-theme-control>
+                        <button class="theme-option" type="button" data-theme-value="light"><span aria-hidden="true">☼</span> 浅色</button>
+                        <button class="theme-option" type="button" data-theme-value="dark"><span aria-hidden="true">☾</span> 深色</button>
+                    </div>
+                </section>
+
+                <section class="control-section" aria-labelledby="background-title">
+                    <div class="control-section-title split-control-title">
+                        <span class="section-glyph" aria-hidden="true">✦</span>
+                        <div><h3 id="background-title">陪伴背景</h3></div>
+                        <button id="background-upload-btn" class="text-action" type="button">上传图片</button>
+                        <input type="file" id="background-input" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+                    </div>
+                    <div class="background-grid" role="group" aria-label="选择背景">
+                        <button class="background-option aurora" type="button" data-background-value="aurora"><i></i><span>星云电波</span></button>
+                        <button class="background-option sakura" type="button" data-background-value="sakura"><i></i><span>樱花清晨</span></button>
+                        <button class="background-option midnight" type="button" data-background-value="midnight"><i></i><span>午夜终端</span></button>
+                        <button class="background-option custom" type="button" data-background-value="custom"><i>＋</i><span>我的背景</span></button>
+                    </div>
+                    <div id="background-status" class="background-status" role="status"></div>
+                </section>
+
+                <section class="control-section" aria-labelledby="accent-title">
+                    <div class="control-section-title">
+                        <span class="section-glyph" aria-hidden="true">◎</span>
+                        <div><h3 id="accent-title">界面个性</h3></div>
+                    </div>
+                    <div class="accent-row">
+                        <span>强调色</span>
+                        <div class="accent-options" role="group" aria-label="选择强调色">
+                            <button class="accent-option" type="button" data-accent-value="pink" aria-label="梦幻粉"></button>
+                            <button class="accent-option" type="button" data-accent-value="cyan" aria-label="电光蓝"></button>
+                            <button class="accent-option" type="button" data-accent-value="violet" aria-label="星云紫"></button>
+                        </div>
+                    </div>
+                    <label class="motion-row" for="motion-toggle">
+                        <span><strong>动态氛围</strong><small>光晕、呼吸与点击反馈</small></span>
+                        <span class="switch-control"><input id="motion-toggle" type="checkbox" checked><i></i></span>
+                    </label>
+                </section>
+
+                <section class="control-section" aria-labelledby="voice-title">
+                    <div class="control-section-title">
+                        <span class="section-glyph" aria-hidden="true">♬</span>
+                        <div><h3 id="voice-title">声音与陪伴</h3></div>
+                    </div>
+                    <div class="voice-row">
+                        <label for="tts-voice-select">LightMe 的声音</label>
+                        <select id="tts-voice-select" title="切换 TTS 语音" class="header-select"></select>
+                        <button id="tts-mute-btn" title="关闭语音" type="button">
+                            <img src="/images/声音.png" alt="声音开关"><span>语音</span>
+                        </button>
+                    </div>
+                    <div class="capability-grid">
+                        <button id="companion-btn" type="button" title="AI 陪伴 - 截图给 AI 看看你的屏幕">
+                            <img src="/images/视觉设置.png" alt=""><span><strong>沉浸陪伴</strong><small>随时说话 · 按需看屏幕</small></span>
+                        </button>
+                        <button id="desktop-pet-btn" type="button" title="启动桌面宠物">
+                            <span class="capability-icon" aria-hidden="true">◇</span><span><strong>桌面宠物</strong><small>陪你待在桌面</small></span>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="control-section" aria-labelledby="advanced-title">
+                    <div class="control-section-title">
+                        <span class="section-glyph" aria-hidden="true">⌘</span>
+                        <div><h3 id="advanced-title">能力中心</h3></div>
+                    </div>
+                    <div class="module-grid">
+                        <button id="tools-btn" type="button" title="工具与技能"><span aria-hidden="true">✣</span><strong>工具技能</strong></button>
+                        <button id="workflow-btn" type="button" title="Planner-Executor 工作流" onclick="window.open('workflow.html', '_blank', 'noopener')"><span aria-hidden="true">⌁</span><strong>执行流程</strong></button>
+                        <button id="term-btn" type="button" title="Agent 终端" onclick="openTerminal()"><span aria-hidden="true">›_</span><strong>运行终端</strong></button>
+                        <button id="config-btn" type="button" title="AI 配置" onclick="window.open('config_ai.html', '_blank', 'noopener')"><span aria-hidden="true">⚙</span><strong>高级设置</strong></button>
+                    </div>
+                </section>
+            </div>
+            <div class="control-center-foot">
+                <span><i></i> 偏好已自动保存</span>
+                <button id="reset-appearance-btn" type="button">恢复默认</button>
+            </div>
+        </aside>
+    </div>
 
     <div id="avatar-modal-overlay" class="modal-overlay" style="display:none;">
         <div class="modal-panel avatar-modal-panel" role="dialog" aria-modal="true" aria-labelledby="avatar-modal-title">
@@ -183,8 +306,9 @@
         </div>
     </div>
 
-    <script src="../js/live2d-ctrl.js"></script>
-    <script src="../js/index.js?v=20260728d"></script>
+    <script src="../js/live2d-ctrl.js?v=20260803a"></script>
+    <script src="../js/index.js?v=20260812a"></script>
+    <script src="../js/ui-customization.js?v=20260809a"></script>
 </body>
 
 </html>

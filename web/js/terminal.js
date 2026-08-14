@@ -193,9 +193,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }).join('') || '<div class="trace-muted">暂无计划版本</div>';
 
         const keyEvents = events.filter(ev => [
-            'run_started', 'plan_created', 'plan_replanned', 'skill_selected',
-            'tool_call_requested', 'loop_detected', 'budget_stop',
-            'subtask_reviewed', 'run_finalized'
+            'run_started', 'reasoning_update', 'session_context_hydrated', 'plan_created', 'plan_replanned',
+            'scheduler_batch_created', 'worker_dispatched', 'worker_started',
+            'worker_tool_call_requested', 'worker_tool_result', 'artifact_created',
+            'worker_tool_policy_violation', 'worker_loop_detected', 'worker_tool_budget_trimmed',
+            'worker_completed', 'scheduler_batch_completed', 'scheduler_blocked',
+            'scheduler_stopped', 'run_handoff_saved', 'run_finalized'
         ].includes(ev.event_type));
         const visibleKeyEvents = keyEvents.slice(-18);
         traceEventsEl.innerHTML = visibleKeyEvents.map((ev, index) => {
@@ -232,7 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const total = graph?.summary?.total ?? subtasks.length;
         const completed = graph?.summary?.completed ?? subtasks.filter(st => st.status === 'completed').length;
         const failed = graph?.summary?.failed ?? subtasks.filter(st => st.status === 'failed').length;
-        const active = graphNodes.find(node => ['ready', 'needs_replan'].includes(node.state)) ||
+        const active = graphNodes.find(node => ['running', 'ready', 'needs_replan'].includes(node.state)) ||
             subtasks.find(st => ['pending', 'retry', 'adjust'].includes(st.status || 'pending'));
         const deps = graph?.edges?.length ?? subtasks.reduce((sum, st) => sum + ((st.depends_on || []).length), 0);
         traceFlowEl.innerHTML = `
@@ -307,15 +310,17 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         const phases = [
-            { node: 'runtime', label: '启动' },
-            { node: 'planning', label: '规划' },
-            { node: 'skill_select', label: '技能' },
-            { node: 'executor', label: '执行' },
-            { node: 'reflection', label: '评审' },
-            { node: 'finalize', label: '汇总' },
+            { node: 'runtime', label: '启动', nodes: ['runtime'] },
+            { node: 'planning', label: '规划', nodes: ['planning'] },
+            { node: 'scheduler', label: '调度', nodes: ['scheduler'] },
+            { node: 'workers', label: '执行', worker: true, nodes: [] },
+            { node: 'finalize', label: '汇总', nodes: ['finalize'] },
         ];
+        const eventsForPhase = (phase) => events.filter((ev) =>
+            phase.nodes.includes(ev.node || '') || (phase.worker && String(ev.node || '').endsWith('_worker'))
+        );
         const rows = phases.map((phase, index) => {
-            const phaseEvents = events.filter(ev => (ev.node || '') === phase.node);
+            const phaseEvents = eventsForPhase(phase);
             const last = phaseEvents[phaseEvents.length - 1];
             const status = phaseEvents.length ? 'done' : 'idle';
             return `
@@ -333,7 +338,7 @@ document.addEventListener('DOMContentLoaded', () => {
         traceTimelineEl.querySelectorAll('.trace-phase').forEach(btn => {
             btn.onclick = () => {
                 const phase = phases[Number(btn.dataset.index)];
-                const phaseEvents = events.filter(ev => (ev.node || '') === phase.node);
+                const phaseEvents = eventsForPhase(phase);
                 const latest = phaseEvents[phaseEvents.length - 1] || {};
                 traceTimelineEl.querySelectorAll('.trace-phase').forEach(item => item.classList.remove('selected'));
                 btn.classList.add('selected');
@@ -348,12 +353,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function summarizeEvent(type, payload) {
         if (type === 'run_started') return `预算 steps=${payload.budget?.max_steps}, time=${payload.budget?.max_runtime_seconds}s, tokens=${payload.budget?.max_tokens}`;
+        if (type === 'reasoning_update') {
+            const next = payload.next_action ? ` -> ${payload.next_action}` : '';
+            return `${payload.title || payload.phase || '思考'}: ${payload.summary || ''}${next}`;
+        }
+        if (type === 'session_context_hydrated') return `loaded ${(payload.source_run_ids || []).length} prior runs, ${payload.context_length || 0} chars`;
         if (type === 'plan_created' || type === 'plan_replanned') return `plan ${payload.plan_id} v${payload.version}, ready=${(payload.ready_subtasks || []).join(',') || '-'}`;
-        if (type === 'skill_selected') return `subtask ${payload.subtask_id}: ${payload.skill} (${payload.source})`;
-        if (type === 'tool_call_requested') return `subtask ${payload.subtask_id}: ${payload.tool}`;
-        if (type === 'subtask_reviewed') return `subtask ${payload.subtask_id}: ${payload.status}, retry=${payload.retry_count}`;
-        if (type === 'loop_detected') return `重复工具调用: ${(payload.repeated_signatures || []).length}`;
-        if (type === 'budget_stop') return payload.reason || 'budget stop';
+        if (type === 'scheduler_batch_created') return `batch ${payload.epoch}: ${(payload.subtask_ids || []).join(',')} (${payload.mode})`;
+        if (type === 'worker_dispatched') return `subtask ${payload.subtask_id} -> ${payload.worker}`;
+        if (type === 'worker_started') return `subtask ${payload.subtask_id}: isolated context ready`;
+        if (type === 'worker_tool_call_requested') return `subtask ${payload.subtask_id}: ${payload.tool}`;
+        if (type === 'worker_tool_result') return `${payload.tool}: ${payload.ok ? 'ok' : 'error'}, ${payload.output_length || 0} chars`;
+        if (type === 'worker_tool_policy_violation') return `${(payload.violations || []).length} policy violations`;
+        if (type === 'worker_loop_detected') return `repeated tool: ${payload.tool || '-'}`;
+        if (type === 'worker_tool_budget_trimmed') return `requested=${payload.requested || 0}, accepted=${payload.accepted || 0}`;
+        if (type === 'artifact_created') return `${payload.kind}: ${payload.uri}`;
+        if (type === 'worker_completed') return `subtask ${payload.subtask_id}: ${payload.status}, evidence=${payload.evidence_count || 0}`;
+        if (type === 'scheduler_batch_completed') return `batch ${payload.epoch}: completed=${(payload.completed || []).length}, retry=${(payload.retry || []).length}`;
+        if (type === 'scheduler_blocked' || type === 'scheduler_stopped') return payload.reason || type;
+        if (type === 'run_handoff_saved') return `saved ${payload.subtasks || 0} subtasks, ${payload.artifacts || 0} artifacts`;
         if (type === 'run_finalized') return `完成 ${payload.metrics?.completed_subtasks ?? 0}/${payload.metrics?.total_subtasks ?? 0}`;
         return JSON.stringify(payload).slice(0, 120);
     }
@@ -361,13 +379,24 @@ document.addEventListener('DOMContentLoaded', () => {
     function labelEvent(type) {
         const labels = {
             run_started: '启动',
+            reasoning_update: '思考',
+            session_context_hydrated: '续接',
             plan_created: '计划',
             plan_replanned: '重规划',
-            skill_selected: '技能',
-            tool_call_requested: '工具',
-            loop_detected: '循环',
-            budget_stop: '预算',
-            subtask_reviewed: '评审',
+            scheduler_batch_created: '批次',
+            worker_dispatched: '派发',
+            worker_started: 'Worker',
+            worker_tool_call_requested: '工具',
+            worker_tool_result: '证据',
+            worker_tool_policy_violation: '越权',
+            worker_loop_detected: '循环',
+            worker_tool_budget_trimmed: '预算',
+            artifact_created: '产物',
+            worker_completed: '验收',
+            scheduler_batch_completed: '归并',
+            scheduler_blocked: '阻塞',
+            scheduler_stopped: '停止',
+            run_handoff_saved: '记忆',
             run_finalized: '完成',
         };
         return labels[type] || type;
@@ -377,9 +406,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const labels = {
             runtime: '运行',
             planning: '规划',
-            skill_select: '技能',
-            executor: '执行',
-            reflection: '评审',
+            scheduler: '调度',
+            research_worker: '研究 Worker',
+            browser_worker: '浏览器 Worker',
+            execution_worker: '执行 Worker',
+            verification_worker: '验证 Worker',
+            general_worker: '通用 Worker',
             finalize: '汇总',
         };
         return labels[node] || node;
@@ -398,6 +430,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function labelDagState(state) {
         const labels = {
             ready: '可执行',
+            running: '执行中',
             waiting: '等待',
             blocked: '阻塞',
             done: '完成',

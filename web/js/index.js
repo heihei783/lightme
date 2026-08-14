@@ -21,8 +21,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const taskMeter = document.getElementById('task-meter');
     const taskMeterPhase = document.getElementById('task-meter-phase');
     const taskElapsed = document.getElementById('task-elapsed');
-    const taskTokens = document.getElementById('task-tokens');
-    const taskSteps = document.getElementById('task-steps');
     const taskProgress = document.getElementById('task-progress');
     const taskPhaseTrack = document.getElementById('task-phase-track');
 
@@ -30,10 +28,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     let ttsMuted = localStorage.getItem('tts_muted') === 'true';
     let taskStartedAt = 0;
     let taskTimer = null;
+    let taskMeterHideTimer = null;
     let activeTaskSessionId = currentSessionId;
     let backendMetricSeen = false;
     let streamedOutputChars = 0;
     let latestTaskMetrics = null;
+    let defaultTTSVoice = { voice: 'zh-CN-XiaoyiNeural', provider: 'edge_tts' };
     let activeAgentProcess = null;
     let agentEnabled = false;
     let avatarProfiles = { user: null, ai: null };
@@ -41,10 +41,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     let pendingAvatarObjectUrl = '';
     // 当前正在上传的头像类型: 'user' | 'ai'
     let avatarUploadTarget = 'user';
-    // 陪伴模式
-    let companionTimer = null;
-    let companionInterval = 10; // 默认10秒，后续从配置读取
+    // 沉浸陪伴：屏幕通道只保持授权，不进行定时截屏
     let companionActive = false;
+    let companionScreenStream = null;
+    let companionScreenTrack = null;
+    let companionVoiceTurnRunning = false;
+    let companionChatController = null;
+    let queuedVoiceUtterance = '';
+    let lastAssistantSpeech = '';
     let imageGenProbability = 0.08;
 
     // ==================== 头像系统 ====================
@@ -303,41 +307,41 @@ document.addEventListener('DOMContentLoaded', async () => {
         initTTSControls();
         resetTaskMeter('空闲');
     }
-    await init();
-    window.addEventListener('focus', fetchRuntimeConfig);
-    window.addEventListener('pageshow', fetchRuntimeConfig);
-
     // ==================== 首页实时任务指标 ====================
     function setTaskMeterVisible(visible) {
         if (!taskMeter) return;
+        if (visible && taskMeterHideTimer) {
+            clearTimeout(taskMeterHideTimer);
+            taskMeterHideTimer = null;
+        }
+        taskMeter.classList.remove('leaving');
         taskMeter.style.display = visible ? '' : 'none';
     }
 
-    // ==================== 聊天内 Agent 执行过程 ====================
-    const processNodeLabels = {
-        runtime: 'Runtime',
-        planning: 'Planner',
-        collaboration: 'Collaboration',
-        skill_select: 'Skill Select',
-        executor: 'Executor',
-        reflection: 'Verifier',
-        finalize: 'Finalize',
-    };
+    function hideTaskMeter(delay = 320) {
+        if (!taskMeter || taskMeter.style.display === 'none') return;
+        if (taskMeterHideTimer) clearTimeout(taskMeterHideTimer);
+        taskMeter.classList.add('leaving');
+        taskMeterHideTimer = setTimeout(() => {
+            taskMeter.style.display = 'none';
+            taskMeter.classList.remove('leaving');
+            taskMeterHideTimer = null;
+        }, delay);
+    }
 
-    function startAgentProcess() {
-        stopAgentProcessTracking();
+    // ==================== 聊天内 Agent 执行过程 ====================
+    function createAgentProcessRow({ expanded = true, restored = false } = {}) {
         const row = document.createElement('div');
-        row.className = 'agent-process-row';
+        row.className = `agent-process-row${restored ? ' restored' : ''}`;
         row.innerHTML = `
-            <section class="agent-process-panel expanded" aria-label="Agent 执行过程">
-                <button class="agent-process-toggle" type="button" aria-expanded="true">
+            <section class="agent-process-panel${expanded ? ' expanded' : ''}" aria-label="Agent 执行过程">
+                <button class="agent-process-toggle" type="button" aria-expanded="${expanded}">
                     <span class="agent-process-orbit" aria-hidden="true"><i></i></span>
                     <span class="agent-process-title">
-                        <strong>正在判断任务路径</strong>
-                        <small>等待 Chat / RAG / Agent 路由</small>
+                        <strong>Agent 正在执行</strong>
                     </span>
                     <span class="agent-process-elapsed">0.0s</span>
-                    <span class="agent-process-chevron" aria-hidden="true">⌃</span>
+                    <span class="agent-process-chevron" aria-hidden="true">${expanded ? '⌃' : '⌄'}</span>
                 </button>
                 <div class="agent-process-body">
                     <div class="agent-plan-preview is-loading">
@@ -348,12 +352,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         <div class="process-event active">
                             <span class="process-event-dot"></span>
                             <span class="process-event-copy">
-                                <b>请求进入任务路由</b>
-                                <small>正在选择执行路径</small>
+                                <b>正在准备执行计划</b>
                             </span>
                         </div>
                     </div>
-                    <a class="agent-process-trace-link" href="workflow.html">查看完整执行拓扑</a>
+                    <a class="agent-process-trace-link" href="workflow.html" target="_blank" rel="noopener">查看完整执行拓扑</a>
                 </div>
             </section>
         `;
@@ -363,6 +366,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             row.querySelector('.agent-process-toggle').setAttribute('aria-expanded', String(expanded));
             row.querySelector('.agent-process-chevron').textContent = expanded ? '⌃' : '⌄';
         });
+        return row;
+    }
+
+    function startAgentProcess() {
+        stopAgentProcessTracking();
+        const row = createAgentProcessRow();
         chatWindow.appendChild(row);
         activeAgentProcess = {
             row,
@@ -377,21 +386,60 @@ document.addEventListener('DOMContentLoaded', async () => {
         chatWindow.scrollTop = chatWindow.scrollHeight;
     }
 
+    async function restoreLatestAgentProcess(sessionId) {
+        if (!sessionId) return;
+        try {
+            const runsResponse = await fetch(`${API_BASE}/agent/runs?session_id=${encodeURIComponent(sessionId)}&limit=3`);
+            const runsData = await runsResponse.json();
+            const run = (runsData.runs || []).find((item) => item.status && item.status !== 'running');
+            if (!run || sessionId !== currentSessionId) return;
+            const traceResponse = await fetch(`${API_BASE}/agent/trace/${encodeURIComponent(run.run_id)}`);
+            const trace = await traceResponse.json();
+            if (trace.status === 'error' || sessionId !== currentSessionId) return;
+
+            const row = createAgentProcessRow({ expanded: false, restored: true });
+            const panel = row.querySelector('.agent-process-panel');
+            const metrics = run.metrics || {};
+            const completed = Number(metrics.completed_subtasks || 0);
+            const total = Number(metrics.total_subtasks || 0);
+            panel.classList.toggle('done', run.status === 'completed');
+            panel.classList.toggle('partial', run.status !== 'completed' && completed > 0);
+            panel.classList.toggle('failed', run.status === 'failed' && completed === 0);
+            row.querySelector('.agent-process-title strong').textContent = '已恢复上一轮 Agent 执行';
+            row.querySelector('.agent-process-elapsed').textContent = `${metrics.step_count || 0} 步`;
+            const link = row.querySelector('.agent-process-trace-link');
+            link.href = `workflow.html?run_id=${encodeURIComponent(run.run_id)}`;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = `查看完整执行拓扑 · ${shortRunId(run.run_id)}`;
+            chatWindow.appendChild(row);
+            renderAgentTrace({ row, runId: run.run_id, lastTrace: trace }, trace);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        } catch (error) {
+            console.debug('恢复 Agent 执行记录失败:', error);
+        }
+    }
+
     function stopAgentProcessTracking() {
         if (activeAgentProcess?.pollTimer) clearTimeout(activeAgentProcess.pollTimer);
         activeAgentProcess = null;
     }
 
     function attachAgentProcessRun(runId) {
+        if (!activeAgentProcess || activeAgentProcess.finished || (activeAgentProcess.runId && activeAgentProcess.runId !== runId)) {
+            startAgentProcess();
+        }
         const process = activeAgentProcess;
         if (!process || !runId) return;
         if (process.runId && process.runId !== runId) return;
         process.runId = runId;
         process.row.querySelector('.agent-process-title strong').textContent = 'Agent Runtime 已启动';
-        process.row.querySelector('.agent-process-title small').textContent = 'Planner-Executor 实时过程';
+        setTaskMeterVisible(true);
         const encoded = encodeURIComponent(runId);
         const link = process.row.querySelector('.agent-process-trace-link');
         link.href = `workflow.html?run_id=${encoded}`;
+        link.target = '_blank';
+        link.rel = 'noopener';
         link.textContent = `查看完整执行拓扑 · ${shortRunId(runId)}`;
         queueAgentTracePoll(80);
     }
@@ -422,8 +470,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 finishAgentProcess(trace.run.status === 'completed', trace.run.metrics || {});
             }
         } catch (error) {
-            const subtitle = process.row.querySelector('.agent-process-title small');
-            if (subtitle && !process.finished) subtitle.textContent = 'Trace 正在同步，执行不受影响';
+            if (!process.finished) process.row.querySelector('.agent-process-title strong').textContent = 'Agent 正在执行';
         } finally {
             process.inFlight = false;
             if (process === activeAgentProcess && !process.finished) queueAgentTracePoll(850);
@@ -436,21 +483,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         const latestPlan = plans[plans.length - 1];
         renderAgentPlan(process, latestPlan);
 
-        const events = (Array.isArray(trace.events) ? trace.events : [])
+        const allImportantEvents = (Array.isArray(trace.events) ? trace.events : [])
+            .filter(isImportantTraceEvent)
             .map(describeTraceEvent)
-            .filter(Boolean)
-            .slice(-40);
+            .filter(Boolean);
+        const events = allImportantEvents.length > 10
+            ? [...allImportantEvents.slice(0, 2), ...allImportantEvents.slice(-8)]
+            : allImportantEvents;
         const timeline = process.row.querySelector('.agent-process-timeline');
         if (events.length) {
             timeline.innerHTML = events.map((event, index) => `
                 <div class="process-event ${event.tone || ''} ${index === events.length - 1 && trace.run?.status === 'running' ? 'active' : ''}">
                     <span class="process-event-dot"></span>
-                    <span class="process-event-node">${escHtml(event.node)}</span>
                     <span class="process-event-copy">
                         <b>${escHtml(event.title)}</b>
-                        ${event.detail ? `<small>${escHtml(event.detail)}</small>` : ''}
+                        ${event.detail ? `<span class="process-event-detail">${escHtml(event.detail)}</span>` : ''}
                     </span>
-                    <time>${escHtml(formatTraceTime(event.time))}</time>
                 </div>
             `).join('');
         }
@@ -470,13 +518,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const container = process.row.querySelector('.agent-plan-preview');
         if (!plan || !Array.isArray(plan.subtasks)) return;
         const graphNodes = new Map((plan.state_graph?.nodes || []).map((node) => [String(node.id), node]));
-        const tasks = plan.subtasks.slice(0, 8);
+        const tasks = plan.subtasks.slice(0, 5);
         container.classList.remove('is-loading');
         container.innerHTML = `
             <div class="agent-plan-head">
-                <span>PLAN v${escHtml(plan.version || 1)}</span>
-                <strong>${plan.subtasks.length} 个子任务</strong>
-                <small>质量 ${escHtml(plan.quality?.score ?? '-')}</small>
+                <strong>执行计划 · ${plan.subtasks.length} 项</strong>
             </div>
             <div class="agent-plan-goal">${escHtml(plan.goal || '结构化执行计划')}</div>
             <div class="agent-plan-tasks">
@@ -487,7 +533,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         <div class="agent-plan-task status-${status}">
                             <span>${escHtml(task.id)}</span>
                             <b>${escHtml(task.desc || task.description || '未命名子任务')}</b>
-                            <small>${escHtml(processStatusLabel(status))}</small>
+                            <em>${escHtml(processStatusLabel(status))}</em>
                         </div>
                     `;
                 }).join('')}
@@ -496,87 +542,83 @@ document.addEventListener('DOMContentLoaded', async () => {
         `;
     }
 
+    const importantTraceEventTypes = new Set([
+        'run_started',
+        'plan_created',
+        'plan_replanned',
+        'worker_started',
+        'worker_completed',
+        'artifact_created',
+        'scheduler_stopped',
+        'scheduler_blocked',
+        'worker_tool_policy_violation',
+        'tool_policy_violation',
+        'worker_loop_detected',
+        'loop_detected',
+        'budget_stop',
+        'run_finalized',
+    ]);
+
+    function isImportantTraceEvent(event) {
+        return importantTraceEventTypes.has(event.event_type);
+    }
+
     function describeTraceEvent(event) {
         const payload = event.payload || {};
-        const node = processNodeLabels[event.node] || event.node || 'Agent';
-        const base = { node, time: event.created_at };
         if (event.event_type === 'run_started') {
-            const budget = payload.budget || {};
-            return { ...base, title: 'Agent Runtime 已启动', detail: `${budget.max_steps || '-'} steps · ${budget.max_tokens || '-'} tokens` };
+            return { title: 'Agent 已开始执行' };
         }
-        if (event.event_type === 'plan_created') {
+        if (event.event_type === 'plan_created' || event.event_type === 'plan_replanned') {
             const total = payload.state_graph?.summary?.total ?? payload.ready_subtasks?.length ?? '-';
-            const score = payload.quality?.score;
-            return { ...base, title: `生成计划 v${payload.version || 1}`, detail: `${total} 个子任务${score != null ? ` · 质量 ${score}` : ''}` };
-        }
-        if (event.event_type === 'skill_selected') {
-            return { ...base, title: `选择技能 ${payload.skill || 'general_llm'}`, detail: `子任务 ${payload.subtask_id || '-'}` };
-        }
-        if (event.event_type === 'executor_tool_policy') {
-            const tools = Array.isArray(payload.allowed_tools) ? payload.allowed_tools.length : 0;
-            const remaining = payload.tool_calls_remaining;
-            return { ...base, title: '应用子任务工具策略', detail: `${payload.task_type || 'general'} / ${payload.risk_level || 'low'} risk · ${tools} tools · ${remaining == null ? `上限 ${payload.max_tool_calls || '-'}` : `剩余 ${remaining}/${payload.max_tool_calls || '-'}`}` };
-        }
-        if (event.event_type === 'tool_call_requested') {
-            return { ...base, title: `调用工具 ${payload.tool || 'unknown'}`, detail: formatToolArgs(payload.args), tone: 'tool' };
-        }
-        if (event.event_type === 'model_observation') {
-            return { ...base, title: '已获得阶段性结果', detail: `子任务 ${payload.subtask_id || '-'}，准备进入验收` };
-        }
-        if (event.event_type === 'tool_budget_exhausted') {
-            return { ...base, title: '工具调用已满足预算', detail: '基于已有工具结果生成阶段性结论', tone: 'warning' };
-        }
-        if (event.event_type === 'tool_budget_trimmed') {
-            return { ...base, title: '裁剪超额工具调用', detail: `请求 ${payload.requested || 0} 个 · 执行 ${payload.accepted || 0} 个`, tone: 'warning' };
-        }
-        if (event.event_type === 'subtask_reviewed') {
-            const status = normalizeProcessStatus(payload.status);
-            const issues = payload.verifier?.issues || [];
             return {
-                ...base,
+                title: event.event_type === 'plan_replanned' ? '执行计划已调整' : '执行计划已生成',
+                detail: `${total} 个子任务`,
+            };
+        }
+        if (event.event_type === 'worker_started') {
+            return { title: `开始子任务 ${payload.subtask_id || '-'}` };
+        }
+        if (event.event_type === 'worker_tool_policy_violation') {
+            return { title: '已阻止越权工具调用', tone: 'error' };
+        }
+        if (event.event_type === 'worker_loop_detected') {
+            return { title: '检测到重复调用，已停止', detail: payload.tool || '', tone: 'warning' };
+        }
+        if (event.event_type === 'artifact_created') {
+            return { title: `已生成${payload.kind || '产物'}`, detail: safeSnippet(payload.uri, 100), tone: 'success' };
+        }
+        if (event.event_type === 'worker_completed') {
+            const status = normalizeProcessStatus(payload.status);
+            const issues = payload.verification?.issues || [];
+            return {
                 title: `子任务 ${payload.subtask_id || '-'} ${processStatusLabel(status)}`,
-                detail: issues.length ? `验收项：${issues.slice(0, 2).join('；')}` : `验证通过 · 重试 ${payload.retry_count || 0} 次`,
+                detail: issues.length ? `验收：${issues.slice(0, 2).join('；')}` : '',
                 tone: status === 'completed' ? 'success' : status === 'failed' ? 'error' : 'warning',
             };
         }
+        if (event.event_type === 'scheduler_stopped' || event.event_type === 'scheduler_blocked') {
+            return { title: event.event_type === 'scheduler_blocked' ? '任务暂时无法继续' : '任务已停止', detail: safeSnippet(payload.reason, 100), tone: 'warning' };
+        }
         if (event.event_type === 'tool_policy_violation') {
-            return { ...base, title: '阻止未授权工具调用', detail: (payload.violations || []).join(', '), tone: 'error' };
+            return { title: '已阻止未授权工具调用', tone: 'error' };
         }
         if (event.event_type === 'loop_detected') {
-            return { ...base, title: '检测到重复工具调用', detail: '循环保护已停止继续调用', tone: 'warning' };
+            return { title: '检测到重复调用，已停止', tone: 'warning' };
         }
         if (event.event_type === 'budget_stop') {
-            return { ...base, title: '达到 Runtime 预算', detail: payload.reason || '执行已停止', tone: 'warning' };
+            return { title: '达到任务预算，已停止', detail: safeSnippet(payload.reason, 100), tone: 'warning' };
         }
         if (event.event_type === 'run_finalized') {
             const metrics = payload.metrics || {};
             const incomplete = Number(metrics.total_subtasks || 0) > Number(metrics.completed_subtasks || 0);
             const stopped = Boolean(metrics.stop_reason) || incomplete;
             return {
-                ...base,
-                title: stopped ? '执行已停止，汇总已有结果' : '完成结果汇总',
-                detail: metrics.stop_reason ? safeSnippet(metrics.stop_reason, 120) : `${metrics.step_count || 0} steps · ${metrics.tool_calls || 0} 次工具调用`,
+                title: stopped ? '执行已停止，汇总已有结果' : 'Agent 执行完成',
+                detail: metrics.stop_reason
+                    ? safeSnippet(metrics.stop_reason, 100)
+                    : `${metrics.completed_subtasks || 0}/${metrics.total_subtasks || 0} 个子任务完成`,
                 tone: stopped ? 'warning' : 'success',
             };
-        }
-        if (event.event_type === 'node_start') {
-            if (event.node === 'planning') return { ...base, title: '理解目标并拆解任务', detail: '正在建立依赖、预算和验收条件' };
-            if (event.node === 'collaboration') return { ...base, title: '评估协作执行策略', detail: `Plan v${payload.version || 1}` };
-            if (event.node === 'skill_select') return { ...base, title: `为子任务 ${payload.subtask_id || '-'} 选择能力`, detail: safeSnippet(payload.desc) };
-            if (event.node === 'executor') {
-                const budget = payload.tool_calls_remaining == null ? '' : ` · 工具预算剩余 ${payload.tool_calls_remaining}`;
-                return { ...base, title: `执行子任务 ${payload.subtask_id || '-'}`, detail: `${safeSnippet(payload.subtask)}${budget}` };
-            }
-            if (event.node === 'reflection') return { ...base, title: `验证子任务 ${payload.subtask_id || '-'}`, detail: safeSnippet(payload.desc) };
-            if (event.node === 'finalize') {
-                const incomplete = Number(payload.total || 0) > Number(payload.completed || 0);
-                return {
-                    ...base,
-                    title: incomplete ? '汇总已有执行结果' : '汇总可交付结果',
-                    detail: payload.stop_reason ? safeSnippet(payload.stop_reason, 120) : `${payload.completed || 0}/${payload.total || 0} 个子任务完成`,
-                    tone: incomplete ? 'warning' : '',
-                };
-            }
         }
         return null;
     }
@@ -586,22 +628,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         return text.length > max ? `${text.slice(0, max)}…` : text;
     }
 
-    function formatToolArgs(args) {
-        if (!args || typeof args !== 'object') return '已提交工具参数';
-        const safeKeys = ['query', 'path', 'file_path', 'url', 'command', 'name', 'pattern'];
-        const parts = safeKeys
-            .filter((key) => args[key] != null)
-            .slice(0, 2)
-            .map((key) => `${key}: ${safeSnippet(args[key], 80)}`);
-        return parts.length ? parts.join(' · ') : '已提交工具参数';
-    }
-
     function normalizeProcessStatus(value) {
         const status = String(value || 'pending').toLowerCase();
         if (['done', 'completed'].includes(status)) return 'completed';
         if (['ready', 'running'].includes(status)) return status;
         if (['failed', 'blocked'].includes(status)) return status;
-        if (['retry', 'adjust', 'needs_replan'].includes(status)) return 'retry';
+        if (['retry', 'retryable', 'adjust', 'needs_replan', 'replan_required'].includes(status)) return 'retry';
         if (status === 'skipped') return 'skipped';
         return 'pending';
     }
@@ -619,23 +651,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }[status] || status;
     }
 
-    function formatTraceTime(value) {
-        if (!value) return '';
-        const date = new Date(String(value).replace(' ', 'T'));
-        if (Number.isNaN(date.getTime())) return '';
-        return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    }
-
     function updateAgentProcessSummary(phase, metrics = {}) {
         const process = activeAgentProcess;
         if (!process?.row?.isConnected) return;
         const title = process.row.querySelector('.agent-process-title strong');
-        const subtitle = process.row.querySelector('.agent-process-title small');
         if (phase) title.textContent = phase;
-        const step = metrics.step_count ?? latestTaskMetrics?.step_count ?? 0;
-        const completed = metrics.completed_subtasks ?? latestTaskMetrics?.completed_subtasks ?? 0;
-        const total = metrics.total_subtasks ?? latestTaskMetrics?.total_subtasks ?? 0;
-        subtitle.textContent = `${step} steps${total ? ` · 子任务 ${completed}/${total}` : ''}`;
     }
 
     function updateAgentProcessElapsed() {
@@ -667,20 +687,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         panel.classList.toggle('partial', partial || (!successful && incomplete));
         panel.classList.toggle('failed', !successful && !partial && !incomplete);
         const elapsed = (performance.now() - process.startedAt) / 1000;
-        const steps = finalMetrics.step_count ?? latestTaskMetrics?.step_count ?? 0;
         const hasAgentRun = Boolean(process.runId);
         const title = process.row.querySelector('.agent-process-title strong');
         if (!hasAgentRun && successful) title.textContent = '快速响应已完成';
         else if (successful) title.textContent = '执行过程已完成';
         else if (partial) title.textContent = '执行过程部分完成';
         else title.textContent = '执行过程已停止';
-        const reason = finalMetrics.stop_reason ? ` · ${safeSnippet(finalMetrics.stop_reason, 80)}` : '';
-        process.row.querySelector('.agent-process-title small').textContent = `${steps} steps · ${formatElapsed(elapsed)}${reason}`;
         process.row.querySelector('.agent-process-elapsed').textContent = formatElapsed(elapsed);
         if (!wasFinished && process.runId) pollAgentTrace(process);
         panel.classList.remove('expanded');
         process.row.querySelector('.agent-process-toggle').setAttribute('aria-expanded', 'false');
         process.row.querySelector('.agent-process-chevron').textContent = '⌄';
+        hideTaskMeter();
     }
 
     async function fetchRuntimeConfig() {
@@ -689,7 +707,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const resp = await fetch(API_BASE + '/config');
             const data = await resp.json();
             if (data.status === 'success') {
-                agentEnabled = !!data.config.agent_open;
+                agentEnabled = !!(data.config.agent_open || data.config.rag_open);
             }
         } catch (e) {
             agentEnabled = false;
@@ -699,7 +717,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             taskTimer = null;
             taskStartedAt = 0;
         }
-        setTaskMeterVisible(agentEnabled);
+        setTaskMeterVisible(false);
     }
 
     function formatElapsed(seconds) {
@@ -720,8 +738,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             item.classList.toggle('active', item.dataset.node === node);
             item.classList.toggle('done', false);
         });
-        const order = ['planning', 'skill_select', 'executor', 'reflection', 'finalize'];
-        const activeIndex = order.indexOf(node);
+        const normalizedNode = String(node || '').endsWith('_worker') ? 'workers' : node;
+        const order = ['planning', 'scheduler', 'workers', 'finalize'];
+        const activeIndex = order.indexOf(normalizedNode);
         if (activeIndex >= 0) {
             taskPhaseTrack.querySelectorAll('span').forEach(item => {
                 item.classList.toggle('done', order.indexOf(item.dataset.node) < activeIndex);
@@ -731,6 +750,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function startTaskMeter(phase) {
         if (!agentEnabled) return;
+        setTaskMeterVisible(false);
         taskStartedAt = performance.now();
         activeTaskSessionId = currentSessionId || 'new';
         backendMetricSeen = false;
@@ -740,8 +760,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         taskMeter.classList.add('running');
         taskMeterPhase.textContent = phase || '处理中';
         taskElapsed.textContent = '0.0s';
-        taskTokens.textContent = '0';
-        taskSteps.textContent = '0';
         taskProgress.textContent = '0/0';
         setActivePhase('');
         if (taskTimer) clearInterval(taskTimer);
@@ -756,6 +774,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     function updateTaskMeter(metrics, node) {
         if (!agentEnabled) return;
         if (!metrics) return;
+        if (!activeAgentProcess?.runId) return;
+        setTaskMeterVisible(true);
         latestTaskMetrics = { ...(latestTaskMetrics || {}), ...metrics };
         if (backendMetricSeen && metrics.elapsed_seconds != null && taskStartedAt) {
             taskStartedAt = performance.now() - Number(metrics.elapsed_seconds || 0) * 1000;
@@ -765,8 +785,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         taskMeterPhase.textContent = metrics.phase || metrics.status || '处理中';
         const elapsed = currentElapsedSeconds() || Number(metrics.elapsed_seconds || 0);
         taskElapsed.textContent = formatElapsed(elapsed);
-        taskTokens.textContent = String(metrics.token_count ?? 0);
-        taskSteps.textContent = String(metrics.step_count ?? 0);
         const completed = metrics.completed_subtasks ?? 0;
         const total = metrics.total_subtasks ?? 0;
         taskProgress.textContent = `${completed}/${total}`;
@@ -786,10 +804,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const tokens = estimateTokens(text);
         latestTaskMetrics = { ...(latestTaskMetrics || {}), token_count: tokens, step_count: 1, completed_subtasks: 1, total_subtasks: 1 };
         const elapsed = currentElapsedSeconds();
-        taskTokens.textContent = String(tokens);
-        taskSteps.textContent = '1';
-        taskProgress.textContent = '1/1';
-        taskMeterPhase.textContent = '流式回复中';
+        if (activeAgentProcess?.runId) {
+            taskProgress.textContent = '1/1';
+            taskMeterPhase.textContent = '流式回复中';
+        }
     }
 
     function finishTaskMeter(ok) {
@@ -803,8 +821,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             const elapsed = currentElapsedSeconds();
             const tokens = Math.ceil(streamedOutputChars / 4);
             taskElapsed.textContent = formatElapsed(elapsed);
-            taskTokens.textContent = String(tokens);
-            taskSteps.textContent = ok ? '1' : '0';
             taskProgress.textContent = ok ? '1/1' : '0/1';
         }
         finishAgentProcess(ok, latestTaskMetrics || {});
@@ -818,13 +834,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         backendMetricSeen = false;
         streamedOutputChars = 0;
         latestTaskMetrics = null;
-        setTaskMeterVisible(agentEnabled);
+        setTaskMeterVisible(false);
         if (!agentEnabled) return;
         taskMeter.className = 'task-meter idle';
         taskMeterPhase.textContent = phase || '空闲';
         taskElapsed.textContent = '0.0s';
-        taskTokens.textContent = '0';
-        taskSteps.textContent = '0';
         taskProgress.textContent = '0/0';
         setActivePhase('');
     }
@@ -845,6 +859,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             localStorage.setItem('latest_agent_run_id', event.run_id);
             attachAgentProcessRun(event.run_id);
         }
+        if (!activeAgentProcess?.runId) return;
         updateTaskMeter(event.metrics || {}, event.node || '');
         queueAgentTracePoll(120);
     }
@@ -870,9 +885,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const resp = await fetch(API_BASE + '/config');
             const data = await resp.json();
             if (data.status === 'success') {
-                agentEnabled = !!data.config.agent_open;
-                setTaskMeterVisible(agentEnabled);
-                if (data.config.companion_interval) companionInterval = data.config.companion_interval;
+                agentEnabled = !!(data.config.agent_open || data.config.rag_open);
+                setTaskMeterVisible(false);
                 if (data.config.image_gen_probability != null) imageGenProbability = data.config.image_gen_probability;
             }
         } catch (e) { /* 保持默认值 */ }
@@ -888,7 +902,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             const resp = await fetch(API_BASE + '/tts/voices');
             const data = await resp.json();
-            if (data.status === 'success') voices = data.voices;
+            if (data.status === 'success') {
+                voices = data.voices || [];
+                if (data.default?.voice) {
+                    defaultTTSVoice = {
+                        voice: data.default.voice,
+                        provider: data.default.provider || 'edge_tts',
+                    };
+                }
+            }
         } catch (e) {
             console.error('获取音色列表失败:', e);
         }
@@ -896,30 +918,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 构建分组选项
         if (voiceSelect) {
             voiceSelect.innerHTML = '';
-            const edgeGroup = document.createElement('optgroup');
-            edgeGroup.label = '─ EdgeTTS ─';
-            const fishGroup = document.createElement('optgroup');
-            fishGroup.label = '─ FishAudio ─';
-
+            const groups = new Map();
             voices.forEach(v => {
-                const opt = document.createElement('option');
-                opt.value = JSON.stringify({ voice: v.voice, provider: v.provider });
-                opt.textContent = v.name;
-                if (v.provider === 'fish_audio') {
-                    fishGroup.appendChild(opt);
-                } else {
-                    edgeGroup.appendChild(opt);
+                const provider = v.provider || 'edge_tts';
+                if (!groups.has(provider)) {
+                    const group = document.createElement('optgroup');
+                    group.label = provider === 'edge_tts' ? 'EdgeTTS' : provider === 'fish_audio' ? 'FishAudio' : provider;
+                    groups.set(provider, group);
                 }
+                const opt = document.createElement('option');
+                opt.value = JSON.stringify({ voice: v.voice, provider });
+                opt.textContent = v.name;
+                groups.get(provider).appendChild(opt);
             });
-            voiceSelect.appendChild(edgeGroup);
-            if (fishGroup.children.length > 0) voiceSelect.appendChild(fishGroup);
+            groups.forEach(group => voiceSelect.appendChild(group));
 
             // 恢复上次选择的音色
             const savedVoice = localStorage.getItem('tts_voice');
-            if (savedVoice) {
-                for (const opt of voiceSelect.options) {
-                    if (opt.value === savedVoice) { voiceSelect.value = savedVoice; break; }
-                }
+            const preferredVoice = savedVoice || JSON.stringify(defaultTTSVoice);
+            for (const opt of voiceSelect.options) {
+                if (opt.value === preferredVoice) { voiceSelect.value = preferredVoice; break; }
             }
             voiceSelect.onchange = () => {
                 localStorage.setItem('tts_voice', voiceSelect.value);
@@ -934,6 +952,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 localStorage.setItem('tts_muted', ttsMuted);
                 muteBtn.textContent = ttsMuted ? '🔇' : '🔊';
                 muteBtn.classList.toggle('muted', ttsMuted);
+                if (ttsMuted && typeof Live2DCtrl !== 'undefined') {
+                    Live2DCtrl.stopVoice?.('muted');
+                }
+                if (!ttsMuted && typeof Live2DCtrl !== 'undefined') {
+                    Live2DCtrl.unlockAudio().catch((error) => console.warn('音频初始化失败:', error));
+                }
             };
         }
     }
@@ -943,7 +967,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (saved) {
             try { return JSON.parse(saved); } catch (e) { /* fall through */ }
         }
-        return { voice: 'zh-CN-XiaoyiNeural', provider: 'edge_tts' };
+        return defaultTTSVoice;
     }
 
     // ==================== 会话列表 ====================
@@ -986,6 +1010,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function switchSession(sid) {
         if (!sid) return;
+        stopAgentProcessTracking();
         currentSessionId = sid;
         localStorage.setItem('last_session_id', sid);
         activeTaskSessionId = sid;
@@ -993,6 +1018,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await fetchSessions();
         chatWindow.innerHTML = '';
         await loadHistory(sid);
+        await restoreLatestAgentProcess(sid);
     }
 
     async function deleteSession(sid, btnEl) {
@@ -1129,8 +1155,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         div.className = 'msg-row ai-row thinking-row';
         div.id = 'thinking-row';
         div.innerHTML = buildAiAvatarHTML() +
-            `<div class="message ai-msg" style="display:flex;align-items:center;justify-content:center;min-height:28px;">
-                <div class="thinking-spinner"></div>
+            `<div class="message ai-msg" style="display:flex;align-items:center;min-height:28px;">
+                <div class="thinking-spinner" aria-hidden="true"></div>
+                <span class="thinking-label">正在思考</span>
             </div>`;
         bindAvatarClicks(div);
         return div;
@@ -1142,19 +1169,136 @@ document.addEventListener('DOMContentLoaded', async () => {
         chatWindow.scrollTop = chatWindow.scrollHeight;
     }
 
-    // 将思考行原地转为正式消息气泡（保留 spinner 继续转），返回气泡 DOM
-    // 调用方拿到第一块文本后自行替换内容
+    function setThinkingStatus(text) {
+        const row = document.getElementById('thinking-row');
+        const label = row ? row.querySelector('.thinking-label') : null;
+        if (label) label.textContent = text;
+    }
+
+    // 将思考行原地转为正式消息气泡，返回气泡 DOM。
     function claimThinkingRow() {
         const row = document.getElementById('thinking-row');
         if (!row) return null;
         row.id = '';
         row.classList.remove('thinking-row');
-        return row.querySelector('.message');
+        const bubble = row.querySelector('.message');
+        if (bubble) bubble.removeAttribute('style');
+        return bubble;
     }
 
     function hideThinking() {
         const row = document.getElementById('thinking-row');
         if (row) row.remove();
+    }
+
+    function claimOrCreateAiBubble() {
+        let aiBubble = claimThinkingRow();
+        if (aiBubble) return aiBubble;
+
+        hideThinking();
+        const aiRow = document.createElement('div');
+        aiRow.className = 'msg-row ai-row';
+        aiRow.innerHTML = buildAiAvatarHTML() + '<div class="message ai-msg"></div>';
+        bindAvatarClicks(aiRow);
+        chatWindow.appendChild(aiRow);
+        return aiRow.querySelector('.message');
+    }
+
+    function createStreamingTextPresenter(aiBubble, { startPaused = false } = {}) {
+        const targetCharacters = [];
+        let renderedCount = 0;
+        let paused = startPaused;
+        let inputDone = false;
+        let timer = null;
+        let timing = null;
+        let resolved = false;
+        let resolveDrained;
+        const drained = new Promise((resolve) => { resolveDrained = resolve; });
+
+        aiBubble.textContent = '';
+        aiBubble.classList.add('is-streaming');
+        aiBubble.setAttribute('aria-live', 'polite');
+        aiBubble.setAttribute('aria-busy', 'true');
+
+        function completeIfReady() {
+            if (!inputDone || renderedCount < targetCharacters.length || resolved) return false;
+            resolved = true;
+            aiBubble.classList.remove('is-streaming');
+            aiBubble.setAttribute('aria-busy', 'false');
+            resolveDrained();
+            return true;
+        }
+
+        function schedule() {
+            if (paused || timer || resolved) return;
+            timer = setTimeout(tick, 20);
+        }
+
+        function tick() {
+            timer = null;
+            if (paused || resolved) return;
+            const backlog = targetCharacters.length - renderedCount;
+            if (backlog <= 0) {
+                completeIfReady();
+                return;
+            }
+
+            let batchSize;
+            if (timing && renderedCount < timing.characterCount) {
+                const elapsed = performance.now() - timing.startedAt;
+                const progress = Math.min(1, elapsed / timing.durationMs);
+                const expectedCount = Math.max(1, Math.floor(progress * timing.characterCount));
+                if (expectedCount <= renderedCount) {
+                    schedule();
+                    return;
+                }
+                batchSize = expectedCount - renderedCount;
+            } else {
+                batchSize = Math.min(8, Math.max(1, Math.ceil(backlog / 48)));
+            }
+
+            renderedCount = Math.min(targetCharacters.length, renderedCount + batchSize);
+            const visibleText = targetCharacters.slice(0, renderedCount).join('');
+            aiBubble.textContent = visibleText;
+            updateStreamingEstimate(visibleText);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            if (!completeIfReady()) schedule();
+        }
+
+        return {
+            append(text) {
+                if (text) targetCharacters.push(...Array.from(text));
+                schedule();
+            },
+            release({ durationMs = 0, timedCharacters = 0 } = {}) {
+                paused = false;
+                if (durationMs > 0 && timedCharacters > 0) {
+                    timing = {
+                        startedAt: performance.now(),
+                        durationMs: Math.max(300, durationMs),
+                        characterCount: Math.min(targetCharacters.length, timedCharacters),
+                    };
+                }
+                schedule();
+            },
+            flush() {
+                paused = false;
+                timing = null;
+                if (timer) clearTimeout(timer);
+                timer = null;
+                renderedCount = targetCharacters.length;
+                const visibleText = targetCharacters.join('');
+                aiBubble.textContent = visibleText;
+                updateStreamingEstimate(visibleText);
+                chatWindow.scrollTop = chatWindow.scrollHeight;
+                completeIfReady();
+            },
+            finish() {
+                inputDone = true;
+                if (!completeIfReady()) schedule();
+                return drained;
+            },
+        };
     }
 
     // ==================== 图片上传 ====================
@@ -1200,28 +1344,144 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     // ==================== 发送消息 ====================
-    sendBtn.onclick = sendMessage;
+    sendBtn.onclick = () => sendMessage();
     userInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendMessage();
     });
 
-    async function sendMessage() {
-        const text = userInput.value.trim();
-        const hasImage = !!selectedImageB64;
+    async function prepareSpeech(text, externalSignal = null) {
+        const spokenText = Array.from(text).slice(0, 200).join('');
+        const voice = getTTSVoice();
+        const controller = new AbortController();
+        const abortFromOutside = () => controller.abort();
+        if (externalSignal) {
+            if (externalSignal.aborted) controller.abort();
+            else externalSignal.addEventListener('abort', abortFromOutside, { once: true });
+        }
+        const timeout = setTimeout(() => controller.abort(), 45000);
+        try {
+            const response = await fetch(API_BASE + '/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: spokenText,
+                    voice: voice.voice,
+                    provider: voice.provider,
+                }),
+                signal: controller.signal,
+            });
+            if (!response.ok) throw new Error(`TTS 请求失败: HTTP ${response.status}`);
+            const data = await response.json();
+            if (data.status !== 'success' || !data.audio) {
+                throw new Error(data.msg || 'TTS 未返回音频');
+            }
+            return { audio: data.audio, spokenText };
+        } finally {
+            clearTimeout(timeout);
+            externalSignal?.removeEventListener('abort', abortFromOutside);
+        }
+    }
+
+    async function consumeStreamingAnswer(response, { ttsEnabled = false, signal = null } = {}) {
+        if (!response.ok) throw new Error(`聊天请求失败: HTTP ${response.status}`);
+        if (!response.body) throw new Error('浏览器未提供流式响应体');
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+        let presenter = null;
+
+        function ensurePresenter(startPaused = false) {
+            if (!presenter) {
+                presenter = createStreamingTextPresenter(claimOrCreateAiBubble(), { startPaused });
+            }
+            return presenter;
+        }
+
+        function acceptChunk(chunk) {
+            if (!chunk) return;
+            fullText += chunk;
+            if (ttsEnabled) {
+                updateStreamingEstimate(fullText);
+            } else {
+                ensurePresenter().append(chunk);
+            }
+        }
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            acceptChunk(decoder.decode(value, { stream: true }));
+        }
+        acceptChunk(decoder.decode());
+
+        if (!fullText) {
+            const aiBubble = claimOrCreateAiBubble();
+            aiBubble.textContent = '连接已结束，但没有收到回答。';
+            return '';
+        }
+
+        if (ttsEnabled) {
+            setThinkingStatus('正在生成语音');
+            let speech = null;
+            let playback = null;
+            try {
+                speech = await prepareSpeech(fullText, signal);
+                lastAssistantSpeech = speech.spokenText;
+                setThinkingStatus('语音已就绪，正在播放');
+                playback = await Live2DCtrl.playVoiceWithLipSync(speech.audio);
+                Live2DCtrl.showMsg(speech.spokenText.slice(0, 100));
+            } catch (error) {
+                console.error('TTS 失败，已降级为文字流:', error);
+                setThinkingStatus('语音生成失败，切换文字输出');
+            }
+
+            const gatedPresenter = ensurePresenter(true);
+            gatedPresenter.append(fullText);
+            gatedPresenter.release({
+                durationMs: playback && playback.duration ? playback.duration * 1000 : 0,
+                timedCharacters: speech ? Array.from(speech.spokenText).length : 0,
+            });
+            if (playback?.ended) {
+                playback.ended.then(({ interrupted }) => {
+                    if (interrupted) gatedPresenter.flush();
+                });
+            }
+        }
+
+        await ensurePresenter().finish();
+        return fullText;
+    }
+
+    async function sendMessage({
+        textOverride = null,
+        imageOverride = null,
+        source = 'typed',
+        signal = null,
+    } = {}) {
+        const fromVoice = source === 'voice';
+        const text = typeof textOverride === 'string' ? textOverride.trim() : userInput.value.trim();
+        const imageForMessage = imageOverride || (fromVoice ? null : selectedImageB64);
+        const hasImage = !!imageForMessage;
         if (!text && !hasImage) return;
+        const ttsEnabledForMessage = !ttsMuted && typeof Live2DCtrl !== 'undefined';
+        if (ttsEnabledForMessage) {
+            Live2DCtrl.unlockAudio().catch((error) => console.warn('音频初始化失败:', error));
+        }
 
         if (hasImage) {
-            renderUserMessage(text || '看看这张图片', selectedImageB64);
+            renderUserMessage(text || '看看这张图片', imageForMessage);
         } else {
             renderUserMessage(text);
         }
-        userInput.value = '';
-        const imgToSend = selectedImageB64;
-        selectedImageB64 = null;
-        imagePreviewRow.style.display = 'none';
+        if (!fromVoice) {
+            userInput.value = '';
+            selectedImageB64 = null;
+            imagePreviewRow.style.display = 'none';
+        }
+        const imgToSend = imageForMessage;
 
         startTaskMeter('请求已发送');
-        if (agentEnabled) startAgentProcess();
         showThinking();
 
         try {
@@ -1232,7 +1492,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     session_id: currentSessionId || 'new',
                     message: text || '请描述这张图片',
                     image: imgToSend || undefined
-                })
+                }),
+                signal,
             });
 
             const newSid = response.headers.get('X-Session-Id');
@@ -1243,42 +1504,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 fetchSessions();
             }
 
-            // 认领思考行（spinner 继续转，直到第一块文本到达才被替换）
-            let aiBubble = claimThinkingRow();
-            if (!aiBubble) {
-                hideThinking();
-                const aiRow = document.createElement('div');
-                aiRow.className = 'msg-row ai-row';
-                aiRow.innerHTML = buildAiAvatarHTML() + '<div class="message ai-msg"></div>';
-                bindAvatarClicks(aiRow);
-                chatWindow.appendChild(aiRow);
-                aiBubble = aiRow.querySelector('.message');
-            }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let fullText = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                fullText += decoder.decode(value);
-                aiBubble.textContent = fullText;
-                updateStreamingEstimate(fullText);
-                chatWindow.scrollTop = chatWindow.scrollHeight;
-            }
-
-            if (!fullText) {
-                aiBubble.textContent = '呜呜，断线了喵...';
-            }
-
-            if (fullText && !ttsMuted && typeof Live2DCtrl !== 'undefined') {
-                speakText(fullText);
+            const fullText = await consumeStreamingAnswer(response, {
+                ttsEnabled: ttsEnabledForMessage,
+                signal,
+            });
+            if (signal?.aborted && fromVoice) {
+                resetTaskMeter('已打断');
+                return '';
             }
             finishTaskMeter(!!fullText);
 
             // 随机概率触发 AI 虚拟生活场景生图
-            if (Math.random() < imageGenProbability && currentSessionId) {
+            if (!signal?.aborted && Math.random() < imageGenProbability && currentSessionId) {
                 try {
                     console.log('[ImageGen] 触发，概率:', imageGenProbability, 'session:', currentSessionId);
                     const imgResp = await fetch(API_BASE + '/image-gen', {
@@ -1296,10 +1533,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
+            return fullText;
+
         } catch (error) {
             hideThinking();
+            if (error?.name === 'AbortError' && fromVoice) {
+                resetTaskMeter('已打断');
+                return '';
+            }
             renderAiMessage('呜呜，断线了喵...');
             finishTaskMeter(false);
+            return '';
         }
     }
 
@@ -1334,138 +1578,295 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderGeneratedImage(imagePath, caption);
     }
 
-    // ==================== TTS 语音合成 ====================
-    async function speakText(text) {
+    // ==================== 沉浸陪伴：持续聆听 + 语音打断 + AI 按需看屏幕 ====================
+    const companionBtn = document.getElementById('companion-btn');
+    const desktopPetBtn = document.getElementById('desktop-pet-btn');
+    const voiceHud = document.getElementById('immersive-voice-hud');
+    const voiceHudStatus = document.getElementById('voice-hud-status');
+    const voiceHudTranscript = document.getElementById('voice-hud-transcript');
+    const screenAccessState = document.getElementById('screen-access-state');
+    let lastBargeInAt = 0;
+
+    function setImmersiveState(state, status, detail = '') {
+        if (voiceHud) voiceHud.dataset.state = state;
+        if (voiceHudStatus && status) voiceHudStatus.textContent = status;
+        if (voiceHudTranscript && detail) voiceHudTranscript.textContent = detail;
+    }
+
+    function setScreenAccessState(state) {
+        if (!screenAccessState) return;
+        screenAccessState.classList.toggle('ready', state === 'ready');
+        screenAccessState.classList.toggle('reading', state === 'reading');
+        const labels = {
+            offline: '屏幕未连接',
+            ready: '按需读取',
+            reading: '正在读取一帧',
+        };
+        screenAccessState.textContent = labels[state] || labels.offline;
+    }
+
+    function updateCompanionButton(active) {
+        if (!companionBtn) return;
+        companionBtn.classList.toggle('active', active);
+        companionBtn.setAttribute('aria-pressed', String(active));
+        const title = companionBtn.querySelector('strong');
+        const description = companionBtn.querySelector('small');
+        if (title) title.textContent = active ? '结束沉浸陪伴' : '沉浸陪伴';
+        if (description) description.textContent = active ? '持续聆听中 · 可随时打断' : '随时说话 · 按需看屏幕';
+    }
+
+    function normalizeSpeechForEcho(text) {
+        return String(text || '')
+            .toLowerCase()
+            .replace(/[\s，。！？、,.!?；;：:“”"'（）()\-—…]/g, '');
+    }
+
+    function isLikelySpeakerEcho(text) {
+        if (!lastAssistantSpeech || Date.now() - lastBargeInAt > 6000) return false;
+        const spoken = normalizeSpeechForEcho(lastAssistantSpeech);
+        const heard = normalizeSpeechForEcho(text);
+        return heard.length >= 6 && (spoken.includes(heard) || heard.includes(spoken.slice(0, Math.min(heard.length, 24))));
+    }
+
+    function fallbackNeedsScreen(text) {
+        const compact = String(text || '').replace(/\s/g, '');
+        if (/不要截图|别截图|不要看屏幕|别看屏幕|停止共享|关闭共享/.test(compact)) return false;
+        return /屏幕|页面|画面|窗口|这个报错|这个错误|这段代码|这个按钮|帮我看看这个|看一下这个|我现在在看|我在做什么|浏览器里|软件里/.test(compact);
+    }
+
+    async function decideWhetherToReadScreen(text) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 14000);
         try {
-            const v = getTTSVoice();
-            const resp = await fetch(API_BASE + '/tts', {
+            const response = await fetch(API_BASE + '/companion/intent', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: text.slice(0, 200), voice: v.voice, provider: v.provider })
+                body: JSON.stringify({ message: text }),
+                signal: controller.signal,
             });
-            const data = await resp.json();
-            if (data.status === 'success' && data.audio && typeof Live2DCtrl !== 'undefined') {
-                Live2DCtrl.playVoiceWithLipSync(data.audio);
-                Live2DCtrl.showMsg(text.slice(0, 100));
-            }
-        } catch (e) {
-            console.error('TTS 失败:', e);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            return data.status === 'success' ? Boolean(data.needs_screen) : fallbackNeedsScreen(text);
+        } catch (error) {
+            console.warn('屏幕意图判断失败，使用本地保守判断:', error);
+            return fallbackNeedsScreen(text);
+        } finally {
+            clearTimeout(timeout);
         }
     }
 
-    // ==================== 陪伴按钮 ====================
-    const companionBtn = document.getElementById('companion-btn');
-    const desktopPetBtn = document.getElementById('desktop-pet-btn');
+    async function captureCurrentScreenFrame(track) {
+        if (!track || track.readyState === 'ended') throw new Error('屏幕通道已结束');
 
-    // 截屏 → 压缩 → 发给 AI，复用的核心函数
-    async function captureAndSend(track) {
-        const imageCapture = new ImageCapture(track);
-        const bitmap = await imageCapture.grabFrame();
+        let source;
+        let sourceWidth;
+        let sourceHeight;
+        if (typeof ImageCapture !== 'undefined') {
+            const imageCapture = new ImageCapture(track);
+            source = await imageCapture.grabFrame();
+            sourceWidth = source.width;
+            sourceHeight = source.height;
+        } else {
+            const video = document.createElement('video');
+            video.muted = true;
+            video.playsInline = true;
+            video.srcObject = companionScreenStream;
+            await video.play();
+            if (!video.videoWidth || !video.videoHeight) {
+                await new Promise((resolve) => video.addEventListener('loadedmetadata', resolve, { once: true }));
+            }
+            source = video;
+            sourceWidth = video.videoWidth;
+            sourceHeight = video.videoHeight;
+        }
+
+        const max = 1280;
+        let width = sourceWidth;
+        let height = sourceHeight;
+        if (width > max || height > max) {
+            if (width > height) { height *= max / width; width = max; }
+            else { width *= max / height; height = max; }
+        }
 
         const canvas = document.createElement('canvas');
-        let w = bitmap.width, h = bitmap.height;
-        const max = 1024;
-        if (w > max || h > max) {
-            if (w > h) { h *= max / w; w = max; }
-            else { w *= max / h; h = max; }
+        canvas.width = Math.max(1, Math.round(width));
+        canvas.height = Math.max(1, Math.round(height));
+        canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+        if (typeof source.close === 'function') source.close();
+        return canvas.toDataURL('image/jpeg', 0.68).split(',')[1];
+    }
+
+    async function processVoiceUtterance(text) {
+        const utterance = String(text || '').trim();
+        if (!utterance || !companionActive) return;
+        if (isLikelySpeakerEcho(utterance)) {
+            setImmersiveState('listening', '正在聆听', '已过滤扬声器回声，继续说就好');
+            return;
         }
-        canvas.width = w; canvas.height = h;
-        canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
-        const imageB64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
 
-        showThinking();
-        startTaskMeter('陪伴分析中');
+        if (companionVoiceTurnRunning) {
+            queuedVoiceUtterance = queuedVoiceUtterance
+                ? `${queuedVoiceUtterance} ${utterance}`
+                : utterance;
+            setImmersiveState('speech', '我听到了', '上一句话结束后马上回应你');
+            return;
+        }
 
-        const response = await fetch(API_BASE + '/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session_id: currentSessionId || 'new',
-                message: '你是一只陪伴主人的猫娘。主人正在看着屏幕。请描述你看到了什么内容，并用可爱关心的语气与主人互动。如果看到代码或文字，可以给出建议或鼓励。',
-                image: imageB64
-            })
+        companionVoiceTurnRunning = true;
+        let currentUtterance = utterance;
+        try {
+            while (currentUtterance && companionActive) {
+                queuedVoiceUtterance = '';
+                setImmersiveState('thinking', '正在理解你的意思', '判断这句话是否需要看屏幕');
+                const needsScreen = await decideWhetherToReadScreen(currentUtterance);
+                if (!companionActive) break;
+
+                let screenFrame = null;
+                if (needsScreen && companionScreenTrack?.readyState === 'live') {
+                    setImmersiveState('capturing', '正在看你指的内容', '只读取当前这一帧画面');
+                    setScreenAccessState('reading');
+                    try {
+                        screenFrame = await captureCurrentScreenFrame(companionScreenTrack);
+                    } catch (error) {
+                        console.error('按需截屏失败:', error);
+                    } finally {
+                        setScreenAccessState(companionActive ? 'ready' : 'offline');
+                    }
+                }
+
+                setImmersiveState('thinking', 'LightMe 正在想', screenFrame ? '已经看到了你指的屏幕内容' : '这句话不需要读取屏幕');
+                const turnController = new AbortController();
+                companionChatController = turnController;
+                try {
+                    await sendMessage({
+                        textOverride: currentUtterance,
+                        imageOverride: screenFrame,
+                        source: 'voice',
+                        signal: turnController.signal,
+                    });
+                } finally {
+                    if (companionChatController === turnController) companionChatController = null;
+                }
+                currentUtterance = queuedVoiceUtterance.trim();
+            }
+        } finally {
+            companionVoiceTurnRunning = false;
+            if (companionActive) {
+                setImmersiveState('listening', '正在聆听', '可以继续说，也可以随时打断我');
+            }
+        }
+    }
+
+    function startImmersiveVoiceInput() {
+        return Live2DCtrl.startVoiceInput({
+            mode: 'immersive',
+            onSpeechStart: () => {
+                if (Live2DCtrl.isVoicePlaying?.()) {
+                    lastBargeInAt = Date.now();
+                    Live2DCtrl.stopVoice('barge-in');
+                }
+                if (companionChatController) {
+                    companionChatController.abort();
+                    companionChatController = null;
+                }
+                setImmersiveState('speech', '我在听', '直接说就好');
+            },
+            onInterim: (text) => {
+                setImmersiveState('speech', '我在听', text);
+            },
+            onFinal: (text) => {
+                Live2DCtrl.showMsg(`听到了：${text}`);
+                processVoiceUtterance(text);
+            },
+            onStateChange: (state) => {
+                if (!companionActive || companionVoiceTurnRunning) return;
+                if (state === 'listening' || state === 'reconnecting') {
+                    setImmersiveState('listening', '正在聆听', '可以随时说话，也可以打断我');
+                } else if (state === 'idle') {
+                    setImmersiveState('idle', '聆听已暂停', '点击角色下方的麦克风继续');
+                } else if (state === 'blocked') {
+                    setImmersiveState('idle', '麦克风权限未开启', '请允许麦克风后重新开启陪伴');
+                }
+            },
+            onError: (error) => {
+                if (!['unsupported', 'not-allowed', 'service-not-allowed'].includes(error)) return;
+                renderAiMessage('沉浸陪伴需要麦克风权限；请允许麦克风后再开启。');
+                stopCompanion({ announce: false });
+            },
         });
-
-        let aiBubble = claimThinkingRow();
-        if (!aiBubble) {
-            hideThinking();
-            const aiRow = document.createElement('div');
-            aiRow.className = 'msg-row ai-row';
-            aiRow.innerHTML = buildAiAvatarHTML() + '<div class="message ai-msg"></div>';
-            bindAvatarClicks(aiRow);
-            chatWindow.appendChild(aiRow);
-            aiBubble = aiRow.querySelector('.message');
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let fullText = '';
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            fullText += decoder.decode(value);
-            aiBubble.textContent = fullText;
-            updateStreamingEstimate(fullText);
-            chatWindow.scrollTop = chatWindow.scrollHeight;
-        }
-
-        if (fullText && !ttsMuted && typeof Live2DCtrl !== 'undefined') {
-            speakText(fullText);
-        }
-        finishTaskMeter(!!fullText);
     }
 
     async function startCompanion() {
+        if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
+            renderAiMessage('当前浏览器暂不支持持续语音识别，请使用最新版 Chrome 或 Edge。');
+            return;
+        }
         try {
             const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
             const track = stream.getVideoTracks()[0];
-
+            companionScreenStream = stream;
+            companionScreenTrack = track;
             companionActive = true;
-            companionBtn.textContent = '陪伴中 ⏸';
-            companionBtn.style.background = '#ff7675';
-            renderAiMessage(`陪伴模式已开启，每 ${companionInterval} 秒自动截屏分析喵~`);
+            updateCompanionButton(true);
+            setScreenAccessState('ready');
+            setImmersiveState('listening', '正在开启麦克风', '屏幕只会在对话需要时读取一帧');
 
-            // 首次立即截屏
-            await captureAndSend(track);
+            if (!startImmersiveVoiceInput()) {
+                throw new Error('无法启动语音识别');
+            }
+            Live2DCtrl.unlockAudio().catch((error) => console.warn('音频初始化失败:', error));
+            renderAiMessage('沉浸陪伴已开启。你可以随时说话，也可以在我说话时直接打断；屏幕只会在你的问题确实需要时读取一帧。');
 
-            // 定时循环
-            companionTimer = setInterval(async () => {
-                if (track.readyState === 'ended') {
-                    stopCompanion();
-                    return;
-                }
-                try {
-                    await captureAndSend(track);
-                } catch (e) {
-                    console.error('陪伴截屏失败:', e);
-                }
-            }, companionInterval * 1000);
-
-            // 用户关闭共享时自动停止
-            track.addEventListener('ended', () => stopCompanion());
-        } catch (e) {
-            console.error('屏幕捕获失败:', e);
+            track.addEventListener('ended', () => {
+                if (companionActive) stopCompanion({ reason: 'screen-ended' });
+            });
+        } catch (error) {
+            console.error('沉浸陪伴启动失败:', error);
             hideThinking();
-            renderAiMessage('陪伴模式需要屏幕捕获权限喵~请在浏览器弹窗中允许。');
+            stopCompanion({ announce: false });
+            renderAiMessage('开启沉浸陪伴需要屏幕共享和麦克风权限，请在浏览器提示中允许。');
         }
     }
 
-    function stopCompanion() {
+    function stopCompanion({ announce = true, reason = 'manual' } = {}) {
+        const wasActive = companionActive;
         companionActive = false;
-        if (companionTimer) { clearInterval(companionTimer); companionTimer = null; }
-        companionBtn.textContent = '陪伴 👀';
-        companionBtn.style.background = '';
-        if (!document.getElementById('thinking-row')) {
-            renderAiMessage('陪伴模式已结束喵~');
+        companionVoiceTurnRunning = false;
+        queuedVoiceUtterance = '';
+        if (companionChatController) {
+            companionChatController.abort();
+            companionChatController = null;
+        }
+        Live2DCtrl.stopVoiceInput?.();
+        Live2DCtrl.stopVoice?.('companion-stopped');
+        if (companionScreenStream) {
+            companionScreenStream.getTracks().forEach((track) => {
+                if (track.readyState !== 'ended') track.stop();
+            });
+        }
+        companionScreenStream = null;
+        companionScreenTrack = null;
+        updateCompanionButton(false);
+        setScreenAccessState('offline');
+        setImmersiveState('idle', '等待开启沉浸陪伴', '可以随时说话，也可以打断我');
+        if (announce && wasActive && !document.getElementById('thinking-row')) {
+            renderAiMessage(reason === 'screen-ended' ? '屏幕共享已结束，沉浸陪伴也暂停了。' : '沉浸陪伴已结束，想继续聊时再叫我。');
         }
     }
+
+    window.addEventListener('lightme:voice-start', () => {
+        if (companionActive) setImmersiveState('speaking', 'LightMe 正在回应', '你可以直接说话打断');
+    });
+
+    window.addEventListener('lightme:voice-end', (event) => {
+        if (!companionActive) return;
+        const interrupted = Boolean(event.detail?.interrupted);
+        setImmersiveState('listening', interrupted ? '已停下，听你说' : '正在聆听', '可以继续说话');
+    });
 
     companionBtn.onclick = () => {
-        if (companionActive) {
-            stopCompanion();
-        } else {
-            startCompanion();
-        }
+        if (companionActive) stopCompanion();
+        else startCompanion();
     };
 
     if (desktopPetBtn) {
@@ -1700,7 +2101,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         shellOverlay.querySelectorAll('.shell-approval-actions button').forEach(b => b.disabled = false);
     }
 
-    // 页面加载时启动 SSE 连接
+    // 所有渲染器与常量完成初始化后，再恢复会话并连接实时事件。
+    await init();
+    window.addEventListener('focus', fetchRuntimeConfig);
+    window.addEventListener('pageshow', fetchRuntimeConfig);
     connectShellSSE();
     connectAgentMetricsSSE();
     // 轮询作为回退
@@ -1713,12 +2117,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         return div.innerHTML;
     }
 
-    // 终端页面跳转: pywebview 内跳转，浏览器开新窗口
+    // 陪伴模式依赖当前页面持有的麦克风和屏幕共享流；新标签页保留原页面即可不中断陪伴。
     window.openTerminal = function () {
-        if (typeof window.pywebview !== 'undefined') {
-            window.location.href = 'terminal.html';
-        } else {
-            window.open('terminal.html', '_blank');
-        }
+        window.open('terminal.html', '_blank', 'noopener');
     };
 });

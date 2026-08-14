@@ -11,6 +11,7 @@ LangGraph 通用 Agent 系统 — 兼容入口
 # 从各子模块重导出，保持外部 import 路径兼容
 from app.agent.memory import AgentMemory, agent_memory
 from app.agent.tools import (
+    knowledge_search,
     execute_python_code,
     read_file_content,
     write_file_content,
@@ -18,6 +19,18 @@ from app.agent.tools import (
     DEFAULT_TOOLS,
 )
 from app.agent.skills import SkillDef, Skill, SkillRegistry, skill_registry
+from app.agent.workers import (
+    WorkerAgent,
+    WorkerArtifact,
+    WorkerEvidence,
+    WorkerOrchestrator,
+    WorkerRegistry,
+    WorkerResult,
+    WorkerSpec,
+    WorkerTask,
+    worker_orchestrator,
+    worker_registry,
+)
 from app.agent.agent_graph import (
     AgentState,
     COORDINATOR_PROMPT,
@@ -31,11 +44,13 @@ from app.agent.agent_graph import (
     tool_executor_node,
     reflection_node,
     collaboration_node,
+    scheduler_node,
     finalize_node,
     # 路由
     should_continue_tools,
     should_continue_plan,
     decide_after_reflection,
+    route_after_scheduler,
     # 图
     agent_workflow,
     agent_graph,
@@ -49,14 +64,17 @@ from app.agent.agent_graph import (
 
 __all__ = [
     "AgentMemory", "agent_memory",
-    "search_knowledge_base", "execute_python_code", "read_file_content",
+    "knowledge_search", "execute_python_code", "read_file_content",
     "write_file_content", "execute_shell_command", "DEFAULT_TOOLS",
     "SkillDef", "Skill", "SkillRegistry", "skill_registry",
+    "WorkerTask", "WorkerEvidence", "WorkerArtifact", "WorkerResult",
+    "WorkerSpec", "WorkerRegistry", "WorkerAgent", "WorkerOrchestrator",
+    "worker_registry", "worker_orchestrator",
     "AgentState",
     "COORDINATOR_PROMPT", "RESEARCHER_PROMPT", "EXECUTOR_PROMPT", "CRITIC_PROMPT",
     "planning_node", "skill_select_node", "executor_node", "tool_executor_node",
-    "reflection_node", "collaboration_node", "finalize_node",
-    "should_continue_tools", "should_continue_plan", "decide_after_reflection",
+    "reflection_node", "collaboration_node", "scheduler_node", "finalize_node",
+    "should_continue_tools", "should_continue_plan", "decide_after_reflection", "route_after_scheduler",
     "agent_workflow", "agent_graph",
     "run_agent", "add_skill", "remove_skill", "list_skills", "get_memory",
 ]

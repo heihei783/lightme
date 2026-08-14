@@ -63,9 +63,16 @@ const Live2DCtrl = (() => {
     let msgTimer = null;
     let audioContext = null;
     let analyser = null;
+    let currentVoiceSource = null;
+    let currentVoiceEndResolver = null;
     let lipSyncInterval = null;
     let hookInterval = null;
     let globalLipSyncValue = 0;
+    let speechRecognition = null;
+    let voiceInputWanted = false;
+    let voiceInputRunning = false;
+    let voiceInputOptions = null;
+    let voiceInputRestartTimer = null;
 
     function injectLive2DHook() {
         if (hookInterval) clearInterval(hookInterval);
@@ -97,6 +104,18 @@ const Live2DCtrl = (() => {
         const role = roleData[charIdx];
         const modelPath = role.path + (role.outfits[outfitIdx] || role.outfits[0]);
 
+        // Compact surfaces can fit each model independently instead of
+        // forcing every character into the same oversized crop.
+        window.dispatchEvent(new CustomEvent('lightme:character-change', {
+            detail: {
+                index: charIdx,
+                name: role.name,
+                outfitIndex: outfitIdx,
+                outfitCount: role.outfits.length,
+                modelPath,
+            },
+        }));
+
         if (window.loadlive2d) {
             currentModel = null;
             globalLipSyncValue = 0;
@@ -114,48 +133,104 @@ const Live2DCtrl = (() => {
         msgTimer = setTimeout(() => box.classList.remove('show'), 5000);
     }
 
-    function playVoiceWithLipSync(base64Audio) {
-        if (!base64Audio) return;
-        try {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (!audioContext) audioContext = new AudioContext();
-            if (audioContext.state === 'suspended') audioContext.resume();
+    function unlockAudio() {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return Promise.reject(new Error('当前浏览器不支持 Web Audio'));
+        if (!audioContext) audioContext = new AudioContext();
+        if (audioContext.state === 'suspended') return audioContext.resume();
+        return Promise.resolve();
+    }
 
-            const audioData = atob(base64Audio);
-            const arrayBuffer = new ArrayBuffer(audioData.length);
-            const view = new Uint8Array(arrayBuffer);
-            for (let i = 0; i < audioData.length; i++) view[i] = audioData.charCodeAt(i);
+    function clearLipSync() {
+        if (lipSyncInterval) clearInterval(lipSyncInterval);
+        lipSyncInterval = null;
+        globalLipSyncValue = 0;
+    }
 
-            audioContext.decodeAudioData(arrayBuffer, (buffer) => {
-                const source = audioContext.createBufferSource();
-                source.buffer = buffer;
-                if (!analyser) analyser = audioContext.createAnalyser();
-                analyser.fftSize = 256;
-                source.connect(analyser);
-                analyser.connect(audioContext.destination);
-                source.start(0);
+    function emitVoiceEvent(type, detail = {}) {
+        window.dispatchEvent(new CustomEvent(`lightme:${type}`, { detail }));
+    }
 
-                if (lipSyncInterval) clearInterval(lipSyncInterval);
-                const dataArray = new Uint8Array(analyser.frequencyBinCount);
-                lipSyncInterval = setInterval(() => {
-                    analyser.getByteFrequencyData(dataArray);
-                    let sum = 0;
-                    const binCount = Math.floor(dataArray.length / 2);
-                    for (let i = 0; i < binCount; i++) sum += dataArray[i];
-                    let volume = sum / binCount;
-                    let targetValue = volume > 5 ? volume / 50 : 0;
-                    targetValue = Math.min(1.0, Math.max(0, targetValue));
-                    globalLipSyncValue = globalLipSyncValue * 0.3 + targetValue * 0.7;
-                }, 20);
+    function finishVoice(reason, source) {
+        if (source && currentVoiceSource && currentVoiceSource !== source) return;
+        currentVoiceSource = null;
+        clearLipSync();
+        const resolveEnded = currentVoiceEndResolver;
+        currentVoiceEndResolver = null;
+        if (resolveEnded) resolveEnded({ reason, interrupted: reason !== 'ended' });
+        emitVoiceEvent('voice-end', { reason, interrupted: reason !== 'ended' });
+    }
 
-                source.onended = () => {
-                    clearInterval(lipSyncInterval);
-                    globalLipSyncValue = 0;
-                };
-            }, () => console.error("音频解码失败"));
-        } catch (e) {
-            console.error("语音播放错误:", e);
+    function stopVoice(reason = 'interrupted') {
+        const source = currentVoiceSource;
+        if (!source) return false;
+        source.onended = null;
+        currentVoiceSource = null;
+        try { source.stop(); } catch (e) { /* 已经结束 */ }
+        finishVoice(reason);
+        return true;
+    }
+
+    function isVoicePlaying() {
+        return Boolean(currentVoiceSource);
+    }
+
+    async function playVoiceWithLipSync(base64Audio) {
+        if (!base64Audio) throw new Error('缺少语音数据');
+
+        await unlockAudio();
+
+        const audioData = atob(base64Audio);
+        const arrayBuffer = new ArrayBuffer(audioData.length);
+        const view = new Uint8Array(arrayBuffer);
+        for (let i = 0; i < audioData.length; i++) view[i] = audioData.charCodeAt(i);
+
+        const buffer = await new Promise((resolve, reject) => {
+            audioContext.decodeAudioData(arrayBuffer, resolve, () => reject(new Error('音频解码失败')));
+        });
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        if (!analyser) {
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            analyser.connect(audioContext.destination);
         }
+        source.connect(analyser);
+
+        const previousSource = currentVoiceSource;
+        currentVoiceSource = source;
+        if (previousSource) {
+            currentVoiceSource = previousSource;
+            stopVoice('replaced');
+            currentVoiceSource = source;
+        }
+
+        if (lipSyncInterval) clearInterval(lipSyncInterval);
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        lipSyncInterval = setInterval(() => {
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            const binCount = Math.floor(dataArray.length / 2);
+            for (let i = 0; i < binCount; i++) sum += dataArray[i];
+            const volume = sum / binCount;
+            const targetValue = Math.min(1, Math.max(0, volume > 5 ? volume / 50 : 0));
+            globalLipSyncValue = globalLipSyncValue * 0.3 + targetValue * 0.7;
+        }, 20);
+
+        let resolveEnded;
+        const ended = new Promise((resolve) => { resolveEnded = resolve; });
+        currentVoiceEndResolver = resolveEnded;
+        source.onended = () => finishVoice('ended', source);
+        source.start(0);
+        emitVoiceEvent('voice-start', { duration: buffer.duration });
+
+        return {
+            duration: buffer.duration,
+            ended,
+            stop: (reason = 'interrupted') => {
+                if (currentVoiceSource === source) stopVoice(reason);
+            },
+        };
     }
 
     function initMouseTracking() {
@@ -198,46 +273,164 @@ const Live2DCtrl = (() => {
         };
     }
 
-    // ASR - 浏览器语音识别
-    function initASR() {
+    function emitVoiceInputState(state, detail = {}) {
+        const sttBtn = document.getElementById('l2d-voice-btn');
+        if (sttBtn) {
+            sttBtn.classList.toggle('recording', state === 'listening' || state === 'speech');
+            sttBtn.setAttribute('aria-pressed', String(voiceInputWanted));
+            sttBtn.title = voiceInputWanted ? '暂停聆听' : '开始语音输入';
+        }
+        emitVoiceEvent('voice-input-state', { state, ...detail });
+        if (voiceInputOptions?.onStateChange) voiceInputOptions.onStateChange(state, detail);
+    }
+
+    function ensureSpeechRecognition() {
+        if (speechRecognition) return speechRecognition;
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) return;
+        if (!SpeechRecognition) return null;
 
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'zh-CN';
-        recognition.interimResults = false;
-        let isListening = false;
+        speechRecognition = new SpeechRecognition();
+        speechRecognition.lang = 'zh-CN';
+        speechRecognition.interimResults = true;
+        speechRecognition.continuous = true;
+        speechRecognition.maxAlternatives = 1;
 
+        speechRecognition.onstart = () => {
+            voiceInputRunning = true;
+            emitVoiceInputState('listening');
+        };
+
+        speechRecognition.onspeechstart = () => {
+            emitVoiceInputState('speech');
+            if (voiceInputOptions?.onSpeechStart) voiceInputOptions.onSpeechStart();
+        };
+
+        speechRecognition.onspeechend = () => {
+            if (voiceInputWanted) emitVoiceInputState('processing');
+        };
+
+        speechRecognition.onresult = (event) => {
+            let interimText = '';
+            const finalParts = [];
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0]?.transcript || '';
+                if (event.results[i].isFinal) finalParts.push(transcript);
+                else interimText += transcript;
+            }
+            if (interimText && voiceInputOptions?.onInterim) {
+                voiceInputOptions.onInterim(interimText.trim());
+            }
+            const finalText = finalParts.join('').trim();
+            if (finalText && voiceInputOptions?.onFinal) {
+                voiceInputOptions.onFinal(finalText);
+            }
+        };
+
+        speechRecognition.onend = () => {
+            voiceInputRunning = false;
+            if (!voiceInputWanted) {
+                emitVoiceInputState('idle');
+                return;
+            }
+            emitVoiceInputState('reconnecting');
+            clearTimeout(voiceInputRestartTimer);
+            voiceInputRestartTimer = setTimeout(() => {
+                if (voiceInputWanted) startRecognitionEngine();
+            }, 260);
+        };
+
+        speechRecognition.onerror = (event) => {
+            const error = event.error || 'unknown';
+            voiceInputRunning = false;
+            if (error === 'not-allowed' || error === 'service-not-allowed') {
+                voiceInputWanted = false;
+                emitVoiceInputState('blocked', { error });
+            } else if (error !== 'aborted' && error !== 'no-speech') {
+                emitVoiceInputState('error', { error });
+            }
+            if (voiceInputOptions?.onError) voiceInputOptions.onError(error);
+        };
+
+        return speechRecognition;
+    }
+
+    function startRecognitionEngine() {
+        const recognition = ensureSpeechRecognition();
+        if (!recognition) {
+            voiceInputWanted = false;
+            emitVoiceInputState('unsupported');
+            if (voiceInputOptions?.onError) voiceInputOptions.onError('unsupported');
+            return false;
+        }
+        if (voiceInputRunning) return true;
+        try {
+            recognition.start();
+            return true;
+        } catch (e) {
+            if (e.name !== 'InvalidStateError') {
+                emitVoiceInputState('error', { error: e.message || 'start-failed' });
+            }
+            return false;
+        }
+    }
+
+    function startVoiceInput(options = {}) {
+        voiceInputOptions = { ...options };
+        voiceInputWanted = true;
+        emitVoiceInputState('starting');
+        return startRecognitionEngine();
+    }
+
+    function stopVoiceInput({ keepOptions = false } = {}) {
+        voiceInputWanted = false;
+        clearTimeout(voiceInputRestartTimer);
+        voiceInputRestartTimer = null;
+        if (speechRecognition && voiceInputRunning) {
+            try { speechRecognition.abort(); } catch (e) { /* 已停止 */ }
+        }
+        voiceInputRunning = false;
+        emitVoiceInputState('idle');
+        if (!keepOptions) voiceInputOptions = null;
+    }
+
+    function isVoiceInputActive() {
+        return voiceInputWanted;
+    }
+
+    // ASR - 单次语音输入与沉浸式持续聆听共用同一识别器
+    function initASR() {
         const sttBtn = document.getElementById('l2d-voice-btn');
         const chatInput = document.getElementById('user-input');
         if (!sttBtn) return;
+        const supported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+        if (!supported) {
+            sttBtn.classList.add('unsupported');
+            sttBtn.title = '当前浏览器不支持语音识别';
+            return;
+        }
 
         sttBtn.onclick = () => {
-            if (!isListening) { try { recognition.start(); } catch(e) {} }
-            else { recognition.stop(); }
-        };
-
-        recognition.onstart = () => {
-            isListening = true;
-            sttBtn.classList.add('recording');
-            if (chatInput) chatInput.placeholder = "正在听你说话...";
-        };
-
-        recognition.onresult = (event) => {
-            const text = event.results[0][0].transcript;
-            if (chatInput) chatInput.value = text;
-            showMsg("听到了: " + text);
-        };
-
-        recognition.onend = () => {
-            isListening = false;
-            sttBtn.classList.remove('recording');
-            if (chatInput) chatInput.placeholder = "输入消息...";
-        };
-
-        recognition.onerror = () => {
-            isListening = false;
-            sttBtn.classList.remove('recording');
+            if (voiceInputWanted) {
+                stopVoiceInput({ keepOptions: voiceInputOptions?.mode === 'immersive' });
+                return;
+            }
+            if (voiceInputOptions?.mode === 'immersive') {
+                voiceInputWanted = true;
+                startRecognitionEngine();
+                return;
+            }
+            startVoiceInput({
+                mode: 'manual',
+                onStateChange: (state) => {
+                    if (!chatInput) return;
+                    chatInput.placeholder = state === 'speech' ? '正在听你说话…' : '想和 LightMe 说些什么…';
+                },
+                onFinal: (text) => {
+                    if (chatInput) chatInput.value = text;
+                    showMsg('听到了: ' + text);
+                    stopVoiceInput();
+                },
+            });
         };
     }
 
@@ -270,5 +463,19 @@ const Live2DCtrl = (() => {
         if (outfitBtn) outfitBtn.onclick = nextOutfit;
     }
 
-    return { init, loadModel, showMsg, playVoiceWithLipSync, nextCharacter, nextOutfit, getCharName };
+    return {
+        init,
+        loadModel,
+        showMsg,
+        unlockAudio,
+        playVoiceWithLipSync,
+        stopVoice,
+        isVoicePlaying,
+        startVoiceInput,
+        stopVoiceInput,
+        isVoiceInputActive,
+        nextCharacter,
+        nextOutfit,
+        getCharName,
+    };
 })();

@@ -157,6 +157,20 @@ class ShellApprovalManager:
 # 全局单例
 shell_approval_mgr = ShellApprovalManager()
 
+_knowledge_rag = None
+_knowledge_rag_lock = threading.Lock()
+
+
+def _get_knowledge_rag():
+    global _knowledge_rag
+    if _knowledge_rag is None:
+        with _knowledge_rag_lock:
+            if _knowledge_rag is None:
+                from utils.rag_handler import AdvancedRAG
+
+                _knowledge_rag = AdvancedRAG()
+    return _knowledge_rag
+
 
 @tool
 def execute_python_code(code: str) -> str:
@@ -555,6 +569,30 @@ def execute_shell_command(command: str) -> str:
         return f"命令执行出错: {str(e)}"
     
 @tool
+def knowledge_search(query: str) -> str:
+    """
+    检索 LightMe 本地知识库，返回相关父文档片段和来源。
+    适用于用户询问已上传文档、项目知识或明确要求查询知识库的任务。
+    参数 query: 需要在知识库中检索的问题或关键词。
+    """
+    if not config_ai.get("rag_open", False):
+        return "知识库检索当前未启用，请在设置中开启 RAG。"
+    try:
+        docs = _get_knowledge_rag().hierarchical_search(query)
+        if not docs:
+            return "知识库中未找到相关内容。"
+        sections = []
+        for index, doc in enumerate(docs[:5], 1):
+            metadata = getattr(doc, "metadata", {}) or {}
+            source = metadata.get("source") or metadata.get("file_name") or metadata.get("title") or "knowledge_base"
+            content = str(getattr(doc, "page_content", "") or "").strip()
+            sections.append(f"[{index}] 来源: {source}\n内容: {content[:900]}")
+        return _truncate("知识库检索结果:\n\n" + "\n\n".join(sections))
+    except Exception as e:
+        return _format_error("知识库检索", e)
+
+
+@tool
 def web_search(query: str) -> str:
     """
     使用 TAVILY 联网搜索引擎进行查询，返回搜索结果摘要。
@@ -575,8 +613,8 @@ def web_search(query: str) -> str:
 
 
 # 默认工具集，可通过 skill_registry 扩展
-# 注意: search_knowledge_base 不在此列 —— 知识库检索由 RAG 路由处理，不在 Agent 工具范围内
 DEFAULT_TOOLS = [
+    knowledge_search,
     execute_python_code,
     read_file_content,
     write_file_content,

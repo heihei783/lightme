@@ -27,6 +27,48 @@ IMAGE_GEN_PROBABILITY: 0.08                # AI 随机生成图片的概率 (0~1
 
 # -------------------- TTS 语音合成 --------------------
 MY_FISH_AUDIO_KEY: your-fish-audio-key-here # Fish Audio API Key
+TTS_MODEL_NAME: zh-CN-XiaoyiNeural           # Edge voice id / Fish reference id
+TTS_MODEL_PROVIDER: edge_tts                 # edge_tts / fish_audio
+TTS_MODEL_API_KEY: ''                        # EdgeTTS 留空；FishAudio 可填写
+TTS_MODEL_URL: https://api.rubia.top/v1/tts  # FishAudio TTS endpoint
+
+TTS_MODEL_PRESETS:
+  - name: 爱丽丝 FishAudio
+    model_name: e488ebeadd83496b97a3cd472dcd04ab
+    provider: fish_audio
+    base_url: https://api.rubia.top/v1/tts
+  - name: 塔菲 FishAudio
+    model_name: 55b28b196e1c4fff9a55cd32a46eff25
+    provider: fish_audio
+    base_url: https://api.rubia.top/v1/tts
+  - name: 小孩姐 FishAudio
+    model_name: 4ca68a299cb24ae599dbb828dc31a73c
+    provider: fish_audio
+    base_url: https://api.rubia.top/v1/tts
+  - name: 才羽桃 FishAudio
+    model_name: 05c25a82cfe0426ab63d3d71ba8656cf
+    provider: fish_audio
+    base_url: https://api.rubia.top/v1/tts
+  - name: 可莉 FishAudio
+    model_name: 0b8449eb752c4f888f463fc5d2c0db65
+    provider: fish_audio
+    base_url: https://api.rubia.top/v1/tts
+  - name: 丁真 FishAudio
+    model_name: 54a5170264694bfc8e9ad98df7bd89c3
+    provider: fish_audio
+    base_url: https://api.rubia.top/v1/tts
+  - name: 小团团 FishAudio
+    model_name: 0da1e00b71164d8cb3761c714b11da64
+    provider: fish_audio
+    base_url: https://api.rubia.top/v1/tts
+  - name: 曼波 FishAudio
+    model_name: 0f08cacd3e354471a4b94dd00b4cc4a3
+    provider: fish_audio
+    base_url: https://api.rubia.top/v1/tts
+  - name: 东雪莲 FishAudio
+    model_name: 94abfed6539d48d281fdb06dc0e09664
+    provider: fish_audio
+    base_url: https://api.rubia.top/v1/tts
 
 # -------------------- RAG 检索配置 --------------------
 rag_open: true                              # 是否开启 RAG 检索
@@ -50,7 +92,7 @@ trace_enabled: true                         # 是否保存结构化 Trace 和计
 eval_mode: false                            # 自动评测模式，开启后可减少非确定性输出
 
 # -------------------- AI 陪伴 --------------------
-companion_interval: 90                      # AI 陪伴主动发言间隔 (秒)
+companion_interval: 90                      # 旧版兼容项；沉浸陪伴不再用它定时截屏
 
 # -------------------- 聊天记录 --------------------
 max_history_len: 10                         # 最大保留的历史消息轮数

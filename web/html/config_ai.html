@@ -5,10 +5,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LightMe 设置中心</title>
-    <link rel="stylesheet" href="../css/config_ai.css">
+    <link rel="stylesheet" href="../css/config_ai.css?v=20260812b">
+    <link rel="stylesheet" href="../css/companion-pages.css?v=20260809a">
+    <script src="../js/theme-bootstrap.js?v=20260809a"></script>
 </head>
 
-<body>
+<body data-page="settings">
     <div class="settings-shell">
         <aside class="settings-sidebar">
             <div class="settings-brand">
@@ -81,13 +83,10 @@
                     </div>
                     <div class="setting-row">
                         <div class="setting-copy">
-                            <strong>陪伴模式间隔</strong>
-                            <span>两次主动交互之间的最短等待时间。</span>
+                            <strong>屏幕读取策略</strong>
+                            <span>不再定时截屏；仅当语音内容确实需要当前画面时读取一帧。</span>
                         </div>
-                        <div class="input-with-unit">
-                            <input type="number" id="companion-interval" value="10" min="3" max="120">
-                            <span>秒</span>
-                        </div>
+                        <span class="setting-value-badge">AI 按需 · 单帧</span>
                     </div>
                     <div class="setting-row">
                         <div class="setting-copy">
@@ -179,7 +178,7 @@
                     <div>
                         <span class="section-index">03 / MODEL SERVICES</span>
                         <h2>模型服务</h2>
-                        <p>管理对话、嵌入、视觉和图片生成服务的连接预设。</p>
+                        <p>管理对话、嵌入、视觉、图片生成和语音合成服务的连接预设。</p>
                     </div>
                 </div>
                 <div class="model-tabs" role="tablist" aria-label="模型类型">
@@ -187,11 +186,13 @@
                     <button class="tab-btn" type="button" role="tab" aria-selected="false" data-tab="embedding">嵌入模型</button>
                     <button class="tab-btn" type="button" role="tab" aria-selected="false" data-tab="vision">视觉模型</button>
                     <button class="tab-btn" type="button" role="tab" aria-selected="false" data-tab="image_gen">生图模型</button>
+                    <button class="tab-btn" type="button" role="tab" aria-selected="false" data-tab="tts">语音模型</button>
                 </div>
                 <div id="tab-chat" class="tab-content active" role="tabpanel"></div>
                 <div id="tab-embedding" class="tab-content" role="tabpanel"></div>
                 <div id="tab-vision" class="tab-content" role="tabpanel"></div>
                 <div id="tab-image_gen" class="tab-content" role="tabpanel"></div>
+                <div id="tab-tts" class="tab-content" role="tabpanel"></div>
             </section>
 
             <section class="settings-section" id="knowledge" data-observe-section>
@@ -234,9 +235,9 @@
             </div>
             <div class="form-grid">
                 <label>预设名称<input type="text" id="modal-name" placeholder="例如 DeepSeek V4"></label>
-                <label>模型名称<input type="text" id="modal-model-name" placeholder="例如 deepseek-v4-flash"></label>
+                <label><span id="modal-model-name-label">模型名称</span><input type="text" id="modal-model-name" placeholder="例如 deepseek-v4-flash"></label>
                 <label class="wide-field">API Key<input type="password" id="modal-api-key" placeholder="sk-..." autocomplete="new-password"></label>
-                <label class="wide-field">Base URL<input type="url" id="modal-base-url" placeholder="https://api.example.com"></label>
+                <label class="wide-field"><span id="modal-base-url-label">Base URL</span><input type="url" id="modal-base-url" placeholder="https://api.example.com"></label>
                 <label class="wide-field">Provider<input type="text" id="modal-provider" placeholder="例如 deepseek"></label>
             </div>
             <div class="modal-actions">
@@ -270,7 +271,7 @@
         </div>
     </div>
 
-    <script src="../js/config_ai.js"></script>
+    <script src="../js/config_ai.js?v=20260812b"></script>
 </body>
 
 </html>
