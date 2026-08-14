@@ -21,8 +21,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const taskMeter = document.getElementById('task-meter');
     const taskMeterPhase = document.getElementById('task-meter-phase');
     const taskElapsed = document.getElementById('task-elapsed');
-    const taskTokens = document.getElementById('task-tokens');
-    const taskSteps = document.getElementById('task-steps');
     const taskProgress = document.getElementById('task-progress');
     const taskPhaseTrack = document.getElementById('task-phase-track');
 
@@ -30,10 +28,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     let ttsMuted = localStorage.getItem('tts_muted') === 'true';
     let taskStartedAt = 0;
     let taskTimer = null;
+    let taskMeterHideTimer = null;
     let activeTaskSessionId = currentSessionId;
     let backendMetricSeen = false;
     let streamedOutputChars = 0;
     let latestTaskMetrics = null;
+    let defaultTTSVoice = { voice: 'zh-CN-XiaoyiNeural', provider: 'edge_tts' };
     let activeAgentProcess = null;
     let agentEnabled = false;
     let avatarProfiles = { user: null, ai: null };
@@ -310,26 +310,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ==================== 首页实时任务指标 ====================
     function setTaskMeterVisible(visible) {
         if (!taskMeter) return;
+        if (visible && taskMeterHideTimer) {
+            clearTimeout(taskMeterHideTimer);
+            taskMeterHideTimer = null;
+        }
+        taskMeter.classList.remove('leaving');
         taskMeter.style.display = visible ? '' : 'none';
     }
 
-    // ==================== 聊天内 Agent 执行过程 ====================
-    const processNodeLabels = {
-        runtime: 'Runtime',
-        planning: 'Planner',
-        scheduler: 'Scheduler',
-        research_worker: 'Research Worker',
-        browser_worker: 'Browser Worker',
-        execution_worker: 'Execution Worker',
-        verification_worker: 'Verification Worker',
-        general_worker: 'General Worker',
-        collaboration: 'Collaboration',
-        skill_select: 'Skill Select',
-        executor: 'Executor',
-        reflection: 'Verifier',
-        finalize: 'Finalize',
-    };
+    function hideTaskMeter(delay = 320) {
+        if (!taskMeter || taskMeter.style.display === 'none') return;
+        if (taskMeterHideTimer) clearTimeout(taskMeterHideTimer);
+        taskMeter.classList.add('leaving');
+        taskMeterHideTimer = setTimeout(() => {
+            taskMeter.style.display = 'none';
+            taskMeter.classList.remove('leaving');
+            taskMeterHideTimer = null;
+        }, delay);
+    }
 
+    // ==================== 聊天内 Agent 执行过程 ====================
     function createAgentProcessRow({ expanded = true, restored = false } = {}) {
         const row = document.createElement('div');
         row.className = `agent-process-row${restored ? ' restored' : ''}`;
@@ -338,28 +338,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <button class="agent-process-toggle" type="button" aria-expanded="${expanded}">
                     <span class="agent-process-orbit" aria-hidden="true"><i></i></span>
                     <span class="agent-process-title">
-                        <strong>正在判断任务路径</strong>
-                        <small>等待 Direct / Agent 统一路由</small>
+                        <strong>Agent 正在执行</strong>
                     </span>
                     <span class="agent-process-elapsed">0.0s</span>
                     <span class="agent-process-chevron" aria-hidden="true">${expanded ? '⌃' : '⌄'}</span>
                 </button>
                 <div class="agent-process-body">
-                    <section class="agent-reasoning-stream" aria-label="思考动态">
-                        <header class="agent-reasoning-head">
-                            <span>思考动态</span>
-                            <small>等待 Runtime</small>
-                        </header>
-                        <div class="agent-reasoning-list">
-                            <div class="agent-reasoning-item active">
-                                <span class="agent-reasoning-phase">理解</span>
-                                <span class="agent-reasoning-copy">
-                                    <b>接收当前请求</b>
-                                    <small>正在建立本次执行上下文。</small>
-                                </span>
-                            </div>
-                        </div>
-                    </section>
                     <div class="agent-plan-preview is-loading">
                         <div class="process-skeleton"></div>
                         <div class="process-skeleton short"></div>
@@ -368,8 +352,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         <div class="process-event active">
                             <span class="process-event-dot"></span>
                             <span class="process-event-copy">
-                                <b>请求进入任务路由</b>
-                                <small>正在选择执行路径</small>
+                                <b>正在准备执行计划</b>
                             </span>
                         </div>
                     </div>
@@ -414,7 +397,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const trace = await traceResponse.json();
             if (trace.status === 'error' || sessionId !== currentSessionId) return;
 
-            const row = createAgentProcessRow({ expanded: true, restored: true });
+            const row = createAgentProcessRow({ expanded: false, restored: true });
             const panel = row.querySelector('.agent-process-panel');
             const metrics = run.metrics || {};
             const completed = Number(metrics.completed_subtasks || 0);
@@ -423,8 +406,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             panel.classList.toggle('partial', run.status !== 'completed' && completed > 0);
             panel.classList.toggle('failed', run.status === 'failed' && completed === 0);
             row.querySelector('.agent-process-title strong').textContent = '已恢复上一轮 Agent 执行';
-            row.querySelector('.agent-process-title small').textContent = `执行上下文已保留${total ? ` · 子任务 ${completed}/${total}` : ''}`;
-            row.querySelector('.agent-process-elapsed').textContent = `${metrics.step_count || 0} steps`;
+            row.querySelector('.agent-process-elapsed').textContent = `${metrics.step_count || 0} 步`;
             const link = row.querySelector('.agent-process-trace-link');
             link.href = `workflow.html?run_id=${encodeURIComponent(run.run_id)}`;
             link.target = '_blank';
@@ -444,12 +426,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function attachAgentProcessRun(runId) {
+        if (!activeAgentProcess || activeAgentProcess.finished || (activeAgentProcess.runId && activeAgentProcess.runId !== runId)) {
+            startAgentProcess();
+        }
         const process = activeAgentProcess;
         if (!process || !runId) return;
         if (process.runId && process.runId !== runId) return;
         process.runId = runId;
         process.row.querySelector('.agent-process-title strong').textContent = 'Agent Runtime 已启动';
-        process.row.querySelector('.agent-process-title small').textContent = 'Planner-Scheduler-Worker 实时过程';
+        setTaskMeterVisible(true);
         const encoded = encodeURIComponent(runId);
         const link = process.row.querySelector('.agent-process-trace-link');
         link.href = `workflow.html?run_id=${encoded}`;
@@ -485,8 +470,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 finishAgentProcess(trace.run.status === 'completed', trace.run.metrics || {});
             }
         } catch (error) {
-            const subtitle = process.row.querySelector('.agent-process-title small');
-            if (subtitle && !process.finished) subtitle.textContent = 'Trace 正在同步，执行不受影响';
+            if (!process.finished) process.row.querySelector('.agent-process-title strong').textContent = 'Agent 正在执行';
         } finally {
             process.inFlight = false;
             if (process === activeAgentProcess && !process.finished) queueAgentTracePoll(850);
@@ -498,23 +482,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         const plans = Array.isArray(trace.plans) ? trace.plans : [];
         const latestPlan = plans[plans.length - 1];
         renderAgentPlan(process, latestPlan);
-        renderAgentReasoning(process, trace);
 
-        const events = (Array.isArray(trace.events) ? trace.events : [])
+        const allImportantEvents = (Array.isArray(trace.events) ? trace.events : [])
+            .filter(isImportantTraceEvent)
             .map(describeTraceEvent)
-            .filter(Boolean)
-            .slice(-40);
+            .filter(Boolean);
+        const events = allImportantEvents.length > 10
+            ? [...allImportantEvents.slice(0, 2), ...allImportantEvents.slice(-8)]
+            : allImportantEvents;
         const timeline = process.row.querySelector('.agent-process-timeline');
         if (events.length) {
             timeline.innerHTML = events.map((event, index) => `
                 <div class="process-event ${event.tone || ''} ${index === events.length - 1 && trace.run?.status === 'running' ? 'active' : ''}">
                     <span class="process-event-dot"></span>
-                    <span class="process-event-node">${escHtml(event.node)}</span>
                     <span class="process-event-copy">
                         <b>${escHtml(event.title)}</b>
-                        ${event.detail ? `<small>${escHtml(event.detail)}</small>` : ''}
+                        ${event.detail ? `<span class="process-event-detail">${escHtml(event.detail)}</span>` : ''}
                     </span>
-                    <time>${escHtml(formatTraceTime(event.time))}</time>
                 </div>
             `).join('');
         }
@@ -530,65 +514,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    const reasoningPhaseLabels = {
-        understand: '理解',
-        recall: '回忆',
-        plan: '计划',
-        decide: '决策',
-        observe: '观察',
-        verify: '验证',
-        next: '下一步',
-        summarize: '汇总',
-    };
-
-    function renderAgentReasoning(process, trace) {
-        const stream = process.row.querySelector('.agent-reasoning-stream');
-        const list = process.row.querySelector('.agent-reasoning-list');
-        const status = process.row.querySelector('.agent-reasoning-head small');
-        if (!stream || !list || !status) return;
-        const updates = (Array.isArray(trace.events) ? trace.events : [])
-            .filter((event) => event.event_type === 'reasoning_update' && event.payload?.visibility === 'public_summary')
-            .slice(-9);
-        if (!updates.length) {
-            status.textContent = trace.run?.status === 'running' ? '等待首个摘要' : '旧版运行轨迹';
-            return;
-        }
-
-        status.textContent = trace.run?.status === 'running' ? `实时 · ${updates.length} 条` : `${updates.length} 条已保存`;
-        list.innerHTML = updates.map((event, index) => {
-            const payload = event.payload || {};
-            const phase = reasoningPhaseLabels[payload.phase] || '思考';
-            const eventStatus = String(payload.status || 'running').toLowerCase();
-            const safeStatus = ['running', 'success', 'ready', 'warning', 'adjusted', 'error'].includes(eventStatus)
-                ? eventStatus
-                : 'running';
-            const active = index === updates.length - 1 && trace.run?.status === 'running';
-            return `
-                <div class="agent-reasoning-item status-${safeStatus}${active ? ' active' : ''}">
-                    <span class="agent-reasoning-phase">${escHtml(phase)}</span>
-                    <span class="agent-reasoning-copy">
-                        <b>${escHtml(payload.title || '更新执行判断')}</b>
-                        ${payload.summary ? `<small>${escHtml(payload.summary)}</small>` : ''}
-                        ${payload.next_action ? `<em><i>下一步</i>${escHtml(payload.next_action)}</em>` : ''}
-                    </span>
-                    <time>${escHtml(formatTraceTime(event.created_at))}</time>
-                </div>
-            `;
-        }).join('');
-        stream.classList.toggle('is-live', trace.run?.status === 'running');
-    }
-
     function renderAgentPlan(process, plan) {
         const container = process.row.querySelector('.agent-plan-preview');
         if (!plan || !Array.isArray(plan.subtasks)) return;
         const graphNodes = new Map((plan.state_graph?.nodes || []).map((node) => [String(node.id), node]));
-        const tasks = plan.subtasks.slice(0, 8);
+        const tasks = plan.subtasks.slice(0, 5);
         container.classList.remove('is-loading');
         container.innerHTML = `
             <div class="agent-plan-head">
-                <span>PLAN v${escHtml(plan.version || 1)}</span>
-                <strong>${plan.subtasks.length} 个子任务</strong>
-                <small>质量 ${escHtml(plan.quality?.score ?? '-')}</small>
+                <strong>执行计划 · ${plan.subtasks.length} 项</strong>
             </div>
             <div class="agent-plan-goal">${escHtml(plan.goal || '结构化执行计划')}</div>
             <div class="agent-plan-tasks">
@@ -599,7 +533,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         <div class="agent-plan-task status-${status}">
                             <span>${escHtml(task.id)}</span>
                             <b>${escHtml(task.desc || task.description || '未命名子任务')}</b>
-                            <small>${escHtml(processStatusLabel(status))}</small>
+                            <em>${escHtml(processStatusLabel(status))}</em>
                         </div>
                     `;
                 }).join('')}
@@ -608,145 +542,83 @@ document.addEventListener('DOMContentLoaded', async () => {
         `;
     }
 
+    const importantTraceEventTypes = new Set([
+        'run_started',
+        'plan_created',
+        'plan_replanned',
+        'worker_started',
+        'worker_completed',
+        'artifact_created',
+        'scheduler_stopped',
+        'scheduler_blocked',
+        'worker_tool_policy_violation',
+        'tool_policy_violation',
+        'worker_loop_detected',
+        'loop_detected',
+        'budget_stop',
+        'run_finalized',
+    ]);
+
+    function isImportantTraceEvent(event) {
+        return importantTraceEventTypes.has(event.event_type);
+    }
+
     function describeTraceEvent(event) {
         const payload = event.payload || {};
-        const node = processNodeLabels[event.node]
-            || (String(event.node || '').endsWith('_worker') ? String(event.node).replace(/_/g, ' ') : event.node)
-            || 'Agent';
-        const base = { node, time: event.created_at };
         if (event.event_type === 'run_started') {
-            const budget = payload.budget || {};
-            return { ...base, title: 'Agent Runtime 已启动', detail: `${budget.max_steps || '-'} steps · ${budget.max_tokens || '-'} tokens` };
+            return { title: 'Agent 已开始执行' };
         }
         if (event.event_type === 'plan_created' || event.event_type === 'plan_replanned') {
             const total = payload.state_graph?.summary?.total ?? payload.ready_subtasks?.length ?? '-';
-            const score = payload.quality?.score;
-            const action = event.event_type === 'plan_replanned' ? '局部重规划' : '生成计划';
-            return { ...base, title: `${action} v${payload.version || 1}`, detail: `${total} 个子任务${score != null ? ` · 质量 ${score}` : ''}` };
-        }
-        if (event.event_type === 'session_context_hydrated') {
-            const runs = Array.isArray(payload.source_run_ids) ? payload.source_run_ids.length : 0;
-            return { ...base, title: '继承上一轮执行上下文', detail: `${runs} 次历史运行 · ${payload.context_length || 0} 字符结构化记忆`, tone: 'success' };
-        }
-        if (event.event_type === 'run_handoff_saved') {
-            return { ...base, title: '保存执行交接记忆', detail: `${payload.subtasks || 0} 个子任务 · ${payload.artifacts || 0} 个产物`, tone: 'success' };
-        }
-        if (event.event_type === 'scheduler_batch_created') {
-            const ids = Array.isArray(payload.subtask_ids) ? payload.subtask_ids.join(', ') : '-';
-            return { ...base, title: `创建执行批次 ${payload.epoch || '-'}`, detail: `子任务 ${ids} · ${payload.mode === 'parallel' ? `${payload.parallelism || 1} 路并行` : '串行执行'}` };
-        }
-        if (event.event_type === 'worker_dispatched') {
-            return { ...base, title: `派发子任务 ${payload.subtask_id || '-'}`, detail: `${payload.worker || 'worker'} · ${payload.task_type || 'general'} / ${payload.risk_level || 'low'} risk` };
+            return {
+                title: event.event_type === 'plan_replanned' ? '执行计划已调整' : '执行计划已生成',
+                detail: `${total} 个子任务`,
+            };
         }
         if (event.event_type === 'worker_started') {
-            return { ...base, title: `开始执行子任务 ${payload.subtask_id || '-'}`, detail: `${payload.worker || 'worker'} 已创建隔离上下文` };
-        }
-        if (event.event_type === 'worker_tool_policy') {
-            const tools = Array.isArray(payload.allowed_tools) ? payload.allowed_tools : [];
-            return { ...base, title: '应用 Worker 工具边界', detail: `${tools.length} 个允许工具 · 最多 ${payload.max_tool_calls || 0} 次调用` };
-        }
-        if (event.event_type === 'worker_tool_call_requested') {
-            return { ...base, title: `调用工具 ${payload.tool || 'unknown'}`, detail: formatToolArgs(payload.args), tone: 'tool' };
-        }
-        if (event.event_type === 'worker_tool_result') {
-            return { ...base, title: `${payload.tool || '工具'} 返回${payload.ok ? '成功' : '异常'}`, detail: `子任务 ${payload.subtask_id || '-'} · ${payload.output_length || 0} 字符证据`, tone: payload.ok ? 'success' : 'warning' };
+            return { title: `开始子任务 ${payload.subtask_id || '-'}` };
         }
         if (event.event_type === 'worker_tool_policy_violation') {
-            return { ...base, title: '阻止 Worker 越权调用', detail: `${(payload.violations || []).length} 项策略违规`, tone: 'error' };
+            return { title: '已阻止越权工具调用', tone: 'error' };
         }
         if (event.event_type === 'worker_loop_detected') {
-            return { ...base, title: '检测到重复工具调用', detail: `${payload.tool || '工具'} 已停止重复执行`, tone: 'warning' };
-        }
-        if (event.event_type === 'worker_tool_budget_trimmed') {
-            return { ...base, title: '裁剪超额工具调用', detail: `请求 ${payload.requested || 0} · 接受 ${payload.accepted || 0}`, tone: 'warning' };
+            return { title: '检测到重复调用，已停止', detail: payload.tool || '', tone: 'warning' };
         }
         if (event.event_type === 'artifact_created') {
-            return { ...base, title: `生成${payload.kind || '产物'}`, detail: safeSnippet(payload.uri, 120), tone: 'success' };
+            return { title: `已生成${payload.kind || '产物'}`, detail: safeSnippet(payload.uri, 100), tone: 'success' };
         }
         if (event.event_type === 'worker_completed') {
             const status = normalizeProcessStatus(payload.status);
             const issues = payload.verification?.issues || [];
             return {
-                ...base,
                 title: `子任务 ${payload.subtask_id || '-'} ${processStatusLabel(status)}`,
-                detail: issues.length ? `验收：${issues.slice(0, 2).join('；')}` : `${payload.evidence_count || 0} 条证据 · ${payload.elapsed_seconds || 0}s`,
+                detail: issues.length ? `验收：${issues.slice(0, 2).join('；')}` : '',
                 tone: status === 'completed' ? 'success' : status === 'failed' ? 'error' : 'warning',
             };
-        }
-        if (event.event_type === 'scheduler_batch_completed') {
-            return { ...base, title: `批次 ${payload.epoch || '-'} 已归并`, detail: `通过 ${(payload.completed || []).length} · 重试 ${(payload.retry || []).length} · 重规划 ${(payload.needs_replan || []).length} · 失败 ${(payload.failed || []).length}` };
         }
         if (event.event_type === 'scheduler_stopped' || event.event_type === 'scheduler_blocked') {
-            return { ...base, title: event.event_type === 'scheduler_blocked' ? '调度器无法继续派发' : '调度器已停止', detail: safeSnippet(payload.reason, 120), tone: 'warning' };
-        }
-        if (event.event_type === 'skill_selected') {
-            return { ...base, title: `选择技能 ${payload.skill || 'general_llm'}`, detail: `子任务 ${payload.subtask_id || '-'}` };
-        }
-        if (event.event_type === 'executor_tool_policy') {
-            const tools = Array.isArray(payload.allowed_tools) ? payload.allowed_tools.length : 0;
-            const remaining = payload.tool_calls_remaining;
-            return { ...base, title: '应用子任务工具策略', detail: `${payload.task_type || 'general'} / ${payload.risk_level || 'low'} risk · ${tools} tools · ${remaining == null ? `上限 ${payload.max_tool_calls || '-'}` : `剩余 ${remaining}/${payload.max_tool_calls || '-'}`}` };
-        }
-        if (event.event_type === 'tool_call_requested') {
-            return { ...base, title: `调用工具 ${payload.tool || 'unknown'}`, detail: formatToolArgs(payload.args), tone: 'tool' };
-        }
-        if (event.event_type === 'model_observation') {
-            return { ...base, title: '已获得阶段性结果', detail: `子任务 ${payload.subtask_id || '-'}，准备进入验收` };
-        }
-        if (event.event_type === 'tool_budget_exhausted') {
-            return { ...base, title: '工具调用已满足预算', detail: '基于已有工具结果生成阶段性结论', tone: 'warning' };
-        }
-        if (event.event_type === 'tool_budget_trimmed') {
-            return { ...base, title: '裁剪超额工具调用', detail: `请求 ${payload.requested || 0} 个 · 执行 ${payload.accepted || 0} 个`, tone: 'warning' };
-        }
-        if (event.event_type === 'subtask_reviewed') {
-            const status = normalizeProcessStatus(payload.status);
-            const issues = payload.verifier?.issues || [];
-            return {
-                ...base,
-                title: `子任务 ${payload.subtask_id || '-'} ${processStatusLabel(status)}`,
-                detail: issues.length ? `验收项：${issues.slice(0, 2).join('；')}` : `验证通过 · 重试 ${payload.retry_count || 0} 次`,
-                tone: status === 'completed' ? 'success' : status === 'failed' ? 'error' : 'warning',
-            };
+            return { title: event.event_type === 'scheduler_blocked' ? '任务暂时无法继续' : '任务已停止', detail: safeSnippet(payload.reason, 100), tone: 'warning' };
         }
         if (event.event_type === 'tool_policy_violation') {
-            return { ...base, title: '阻止未授权工具调用', detail: (payload.violations || []).join(', '), tone: 'error' };
+            return { title: '已阻止未授权工具调用', tone: 'error' };
         }
         if (event.event_type === 'loop_detected') {
-            return { ...base, title: '检测到重复工具调用', detail: '循环保护已停止继续调用', tone: 'warning' };
+            return { title: '检测到重复调用，已停止', tone: 'warning' };
         }
         if (event.event_type === 'budget_stop') {
-            return { ...base, title: '达到 Runtime 预算', detail: payload.reason || '执行已停止', tone: 'warning' };
+            return { title: '达到任务预算，已停止', detail: safeSnippet(payload.reason, 100), tone: 'warning' };
         }
         if (event.event_type === 'run_finalized') {
             const metrics = payload.metrics || {};
             const incomplete = Number(metrics.total_subtasks || 0) > Number(metrics.completed_subtasks || 0);
             const stopped = Boolean(metrics.stop_reason) || incomplete;
             return {
-                ...base,
-                title: stopped ? '执行已停止，汇总已有结果' : '完成结果汇总',
-                detail: metrics.stop_reason ? safeSnippet(metrics.stop_reason, 120) : `${metrics.step_count || 0} steps · ${metrics.tool_calls || 0} 次工具调用`,
+                title: stopped ? '执行已停止，汇总已有结果' : 'Agent 执行完成',
+                detail: metrics.stop_reason
+                    ? safeSnippet(metrics.stop_reason, 100)
+                    : `${metrics.completed_subtasks || 0}/${metrics.total_subtasks || 0} 个子任务完成`,
                 tone: stopped ? 'warning' : 'success',
             };
-        }
-        if (event.event_type === 'node_start') {
-            if (event.node === 'planning') return { ...base, title: '理解目标并拆解任务', detail: '正在建立依赖、预算和验收条件' };
-            if (event.node === 'collaboration') return { ...base, title: '评估协作执行策略', detail: `Plan v${payload.version || 1}` };
-            if (event.node === 'skill_select') return { ...base, title: `为子任务 ${payload.subtask_id || '-'} 选择能力`, detail: safeSnippet(payload.desc) };
-            if (event.node === 'executor') {
-                const budget = payload.tool_calls_remaining == null ? '' : ` · 工具预算剩余 ${payload.tool_calls_remaining}`;
-                return { ...base, title: `执行子任务 ${payload.subtask_id || '-'}`, detail: `${safeSnippet(payload.subtask)}${budget}` };
-            }
-            if (event.node === 'reflection') return { ...base, title: `验证子任务 ${payload.subtask_id || '-'}`, detail: safeSnippet(payload.desc) };
-            if (event.node === 'finalize') {
-                const incomplete = Number(payload.total || 0) > Number(payload.completed || 0);
-                return {
-                    ...base,
-                    title: incomplete ? '汇总已有执行结果' : '汇总可交付结果',
-                    detail: payload.stop_reason ? safeSnippet(payload.stop_reason, 120) : `${payload.completed || 0}/${payload.total || 0} 个子任务完成`,
-                    tone: incomplete ? 'warning' : '',
-                };
-            }
         }
         return null;
     }
@@ -754,16 +626,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     function safeSnippet(value, max = 100) {
         const text = String(value || '').replace(/\s+/g, ' ').trim();
         return text.length > max ? `${text.slice(0, max)}…` : text;
-    }
-
-    function formatToolArgs(args) {
-        if (!args || typeof args !== 'object') return '已提交工具参数';
-        const safeKeys = ['query', 'path', 'file_path', 'url', 'command', 'name', 'pattern'];
-        const parts = safeKeys
-            .filter((key) => args[key] != null)
-            .slice(0, 2)
-            .map((key) => `${key}: ${safeSnippet(args[key], 80)}`);
-        return parts.length ? parts.join(' · ') : '已提交工具参数';
     }
 
     function normalizeProcessStatus(value) {
@@ -789,23 +651,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }[status] || status;
     }
 
-    function formatTraceTime(value) {
-        if (!value) return '';
-        const date = new Date(String(value).replace(' ', 'T'));
-        if (Number.isNaN(date.getTime())) return '';
-        return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    }
-
     function updateAgentProcessSummary(phase, metrics = {}) {
         const process = activeAgentProcess;
         if (!process?.row?.isConnected) return;
         const title = process.row.querySelector('.agent-process-title strong');
-        const subtitle = process.row.querySelector('.agent-process-title small');
         if (phase) title.textContent = phase;
-        const step = metrics.step_count ?? latestTaskMetrics?.step_count ?? 0;
-        const completed = metrics.completed_subtasks ?? latestTaskMetrics?.completed_subtasks ?? 0;
-        const total = metrics.total_subtasks ?? latestTaskMetrics?.total_subtasks ?? 0;
-        subtitle.textContent = `${step} steps${total ? ` · 子任务 ${completed}/${total}` : ''}`;
     }
 
     function updateAgentProcessElapsed() {
@@ -837,20 +687,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         panel.classList.toggle('partial', partial || (!successful && incomplete));
         panel.classList.toggle('failed', !successful && !partial && !incomplete);
         const elapsed = (performance.now() - process.startedAt) / 1000;
-        const steps = finalMetrics.step_count ?? latestTaskMetrics?.step_count ?? 0;
         const hasAgentRun = Boolean(process.runId);
         const title = process.row.querySelector('.agent-process-title strong');
         if (!hasAgentRun && successful) title.textContent = '快速响应已完成';
         else if (successful) title.textContent = '执行过程已完成';
         else if (partial) title.textContent = '执行过程部分完成';
         else title.textContent = '执行过程已停止';
-        const reason = finalMetrics.stop_reason ? ` · ${safeSnippet(finalMetrics.stop_reason, 80)}` : '';
-        process.row.querySelector('.agent-process-title small').textContent = `${steps} steps · ${formatElapsed(elapsed)}${reason}`;
         process.row.querySelector('.agent-process-elapsed').textContent = formatElapsed(elapsed);
         if (!wasFinished && process.runId) pollAgentTrace(process);
         panel.classList.remove('expanded');
         process.row.querySelector('.agent-process-toggle').setAttribute('aria-expanded', 'false');
         process.row.querySelector('.agent-process-chevron').textContent = '⌄';
+        hideTaskMeter();
     }
 
     async function fetchRuntimeConfig() {
@@ -869,7 +717,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             taskTimer = null;
             taskStartedAt = 0;
         }
-        setTaskMeterVisible(agentEnabled);
+        setTaskMeterVisible(false);
     }
 
     function formatElapsed(seconds) {
@@ -902,6 +750,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function startTaskMeter(phase) {
         if (!agentEnabled) return;
+        setTaskMeterVisible(false);
         taskStartedAt = performance.now();
         activeTaskSessionId = currentSessionId || 'new';
         backendMetricSeen = false;
@@ -911,8 +760,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         taskMeter.classList.add('running');
         taskMeterPhase.textContent = phase || '处理中';
         taskElapsed.textContent = '0.0s';
-        taskTokens.textContent = '0';
-        taskSteps.textContent = '0';
         taskProgress.textContent = '0/0';
         setActivePhase('');
         if (taskTimer) clearInterval(taskTimer);
@@ -927,6 +774,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     function updateTaskMeter(metrics, node) {
         if (!agentEnabled) return;
         if (!metrics) return;
+        if (!activeAgentProcess?.runId) return;
+        setTaskMeterVisible(true);
         latestTaskMetrics = { ...(latestTaskMetrics || {}), ...metrics };
         if (backendMetricSeen && metrics.elapsed_seconds != null && taskStartedAt) {
             taskStartedAt = performance.now() - Number(metrics.elapsed_seconds || 0) * 1000;
@@ -936,8 +785,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         taskMeterPhase.textContent = metrics.phase || metrics.status || '处理中';
         const elapsed = currentElapsedSeconds() || Number(metrics.elapsed_seconds || 0);
         taskElapsed.textContent = formatElapsed(elapsed);
-        taskTokens.textContent = String(metrics.token_count ?? 0);
-        taskSteps.textContent = String(metrics.step_count ?? 0);
         const completed = metrics.completed_subtasks ?? 0;
         const total = metrics.total_subtasks ?? 0;
         taskProgress.textContent = `${completed}/${total}`;
@@ -957,10 +804,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const tokens = estimateTokens(text);
         latestTaskMetrics = { ...(latestTaskMetrics || {}), token_count: tokens, step_count: 1, completed_subtasks: 1, total_subtasks: 1 };
         const elapsed = currentElapsedSeconds();
-        taskTokens.textContent = String(tokens);
-        taskSteps.textContent = '1';
-        taskProgress.textContent = '1/1';
-        taskMeterPhase.textContent = '流式回复中';
+        if (activeAgentProcess?.runId) {
+            taskProgress.textContent = '1/1';
+            taskMeterPhase.textContent = '流式回复中';
+        }
     }
 
     function finishTaskMeter(ok) {
@@ -974,8 +821,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             const elapsed = currentElapsedSeconds();
             const tokens = Math.ceil(streamedOutputChars / 4);
             taskElapsed.textContent = formatElapsed(elapsed);
-            taskTokens.textContent = String(tokens);
-            taskSteps.textContent = ok ? '1' : '0';
             taskProgress.textContent = ok ? '1/1' : '0/1';
         }
         finishAgentProcess(ok, latestTaskMetrics || {});
@@ -989,13 +834,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         backendMetricSeen = false;
         streamedOutputChars = 0;
         latestTaskMetrics = null;
-        setTaskMeterVisible(agentEnabled);
+        setTaskMeterVisible(false);
         if (!agentEnabled) return;
         taskMeter.className = 'task-meter idle';
         taskMeterPhase.textContent = phase || '空闲';
         taskElapsed.textContent = '0.0s';
-        taskTokens.textContent = '0';
-        taskSteps.textContent = '0';
         taskProgress.textContent = '0/0';
         setActivePhase('');
     }
@@ -1016,6 +859,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             localStorage.setItem('latest_agent_run_id', event.run_id);
             attachAgentProcessRun(event.run_id);
         }
+        if (!activeAgentProcess?.runId) return;
         updateTaskMeter(event.metrics || {}, event.node || '');
         queueAgentTracePoll(120);
     }
@@ -1042,7 +886,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await resp.json();
             if (data.status === 'success') {
                 agentEnabled = !!(data.config.agent_open || data.config.rag_open);
-                setTaskMeterVisible(agentEnabled);
+                setTaskMeterVisible(false);
                 if (data.config.image_gen_probability != null) imageGenProbability = data.config.image_gen_probability;
             }
         } catch (e) { /* 保持默认值 */ }
@@ -1058,7 +902,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             const resp = await fetch(API_BASE + '/tts/voices');
             const data = await resp.json();
-            if (data.status === 'success') voices = data.voices;
+            if (data.status === 'success') {
+                voices = data.voices || [];
+                if (data.default?.voice) {
+                    defaultTTSVoice = {
+                        voice: data.default.voice,
+                        provider: data.default.provider || 'edge_tts',
+                    };
+                }
+            }
         } catch (e) {
             console.error('获取音色列表失败:', e);
         }
@@ -1066,30 +918,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 构建分组选项
         if (voiceSelect) {
             voiceSelect.innerHTML = '';
-            const edgeGroup = document.createElement('optgroup');
-            edgeGroup.label = '─ EdgeTTS ─';
-            const fishGroup = document.createElement('optgroup');
-            fishGroup.label = '─ FishAudio ─';
-
+            const groups = new Map();
             voices.forEach(v => {
-                const opt = document.createElement('option');
-                opt.value = JSON.stringify({ voice: v.voice, provider: v.provider });
-                opt.textContent = v.name;
-                if (v.provider === 'fish_audio') {
-                    fishGroup.appendChild(opt);
-                } else {
-                    edgeGroup.appendChild(opt);
+                const provider = v.provider || 'edge_tts';
+                if (!groups.has(provider)) {
+                    const group = document.createElement('optgroup');
+                    group.label = provider === 'edge_tts' ? 'EdgeTTS' : provider === 'fish_audio' ? 'FishAudio' : provider;
+                    groups.set(provider, group);
                 }
+                const opt = document.createElement('option');
+                opt.value = JSON.stringify({ voice: v.voice, provider });
+                opt.textContent = v.name;
+                groups.get(provider).appendChild(opt);
             });
-            voiceSelect.appendChild(edgeGroup);
-            if (fishGroup.children.length > 0) voiceSelect.appendChild(fishGroup);
+            groups.forEach(group => voiceSelect.appendChild(group));
 
             // 恢复上次选择的音色
             const savedVoice = localStorage.getItem('tts_voice');
-            if (savedVoice) {
-                for (const opt of voiceSelect.options) {
-                    if (opt.value === savedVoice) { voiceSelect.value = savedVoice; break; }
-                }
+            const preferredVoice = savedVoice || JSON.stringify(defaultTTSVoice);
+            for (const opt of voiceSelect.options) {
+                if (opt.value === preferredVoice) { voiceSelect.value = preferredVoice; break; }
             }
             voiceSelect.onchange = () => {
                 localStorage.setItem('tts_voice', voiceSelect.value);
@@ -1119,7 +967,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (saved) {
             try { return JSON.parse(saved); } catch (e) { /* fall through */ }
         }
-        return { voice: 'zh-CN-XiaoyiNeural', provider: 'edge_tts' };
+        return defaultTTSVoice;
     }
 
     // ==================== 会话列表 ====================
@@ -1634,7 +1482,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         const imgToSend = imageForMessage;
 
         startTaskMeter('请求已发送');
-        if (agentEnabled) startAgentProcess();
         showThinking();
 
         try {

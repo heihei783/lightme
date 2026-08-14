@@ -358,8 +358,12 @@ async def image_gen(request: Request):
 @app.get("/tts/voices")
 async def tts_voices():
     """获取所有可用 TTS 音色列表"""
-    from app.llm.tts import get_voice_list
-    return {"status": "success", "voices": get_voice_list()}
+    from app.llm.tts import get_default_voice, get_voice_list
+    return {
+        "status": "success",
+        "voices": get_voice_list(),
+        "default": get_default_voice(),
+    }
 
 
 @app.post("/tts")
@@ -370,7 +374,7 @@ async def tts_endpoint(request: Request):
     data = await request.json()
     text = data.get("text", "")
     voice = data.get("voice", "")
-    provider = data.get("provider", "edge_tts")
+    provider = data.get("provider")
     if not text:
         return {"status": "error", "msg": "缺少 text 参数"}
     try:
@@ -549,6 +553,15 @@ MODEL_TYPE_MAP = {
             "model_name": "IMAGE_GEN_MODEL_NAME",
             "api_key": "IMAGE_GEN_MODEL_API_KEY",
             "base_url": "IMAGE_GEN_MODEL_URL",
+        },
+    },
+    "tts": {
+        "presets_key": "TTS_MODEL_PRESETS",
+        "active_keys": {
+            "model_name": "TTS_MODEL_NAME",
+            "provider": "TTS_MODEL_PROVIDER",
+            "api_key": "TTS_MODEL_API_KEY",
+            "base_url": "TTS_MODEL_URL",
         },
     },
 }

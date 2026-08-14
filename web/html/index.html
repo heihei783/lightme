@@ -8,8 +8,8 @@
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🤖</text></svg>">
     <link rel="stylesheet" href="../css/index.css?v=20260728d">
-    <link rel="stylesheet" href="../css/workbench.css?v=20260803b">
-    <link rel="stylesheet" href="../css/companion-ui.css?v=20260809a">
+    <link rel="stylesheet" href="../css/workbench.css?v=20260812a">
+    <link rel="stylesheet" href="../css/companion-ui.css?v=20260812a">
     <script src="../js/theme-bootstrap.js?v=20260809a"></script>
     <script>const API_BASE = window.location.origin;</script>
     <script src="../js/live2d-sdk.js"></script>
@@ -29,18 +29,16 @@
                     <span class="brand-mark"><i></i>LM</span>
                     <span>
                         <strong>LightMe</strong>
-                        <small>Companion OS</small>
                     </span>
                 </div>
                 <button id="new-chat-btn"><span aria-hidden="true">＋</span> 开启新对话 <kbd>⌘ N</kbd></button>
             </div>
-            <div class="sidebar-label"><span>心情记忆</span><small>RECENT</small></div>
+            <div class="sidebar-label"><span>心情记忆</span></div>
             <div id="session-list" class="session-list"></div>
             <div class="sidebar-footer">
                 <div class="memory-pulse" aria-hidden="true"><span></span><span></span><span></span></div>
                 <div>
                     <strong>陪伴记忆已连接</strong>
-                    <small>只属于你和 LightMe 的空间</small>
                 </div>
             </div>
         </div>
@@ -53,9 +51,8 @@
                 <span class="stage-platform"></span>
             </div>
             <div class="companion-label">
-                <span class="companion-live"><i></i> ONLINE</span>
+                <span class="companion-live"><i></i></span>
                 <strong>和你待在一起</strong>
-                <small>LIVE COMPANION · 01</small>
             </div>
             <div id="immersive-voice-hud" class="immersive-voice-hud" data-state="idle" aria-live="polite">
                 <span class="voice-orb" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -83,7 +80,6 @@
         <div class="chat-side">
             <div class="header">
                 <div class="header-title">
-                    <span class="header-eyebrow"><i></i> PRIVATE CHANNEL</span>
                     <h2 id="current-title">LightMe System</h2>
                 </div>
                 <div class="header-right">
@@ -110,10 +106,8 @@
                     </div>
                 </div>
                 <div class="task-meter-stats">
-                    <span><b id="task-elapsed">0.0s</b><small>耗时</small></span>
-                    <span><b id="task-tokens">0</b><small>tokens</small></span>
-                    <span><b id="task-steps">0</b><small>steps</small></span>
-                    <span><b id="task-progress">0/0</b><small>子任务</small></span>
+                    <span><small>用时</small><b id="task-elapsed">0.0s</b></span>
+                    <span><small>任务进度</small><b id="task-progress">0/0</b></span>
                 </div>
             </div>
 
@@ -147,7 +141,6 @@
         <aside id="control-center" class="control-center" role="dialog" aria-modal="true" aria-labelledby="control-center-title">
             <div class="control-center-head">
                 <div>
-                    <span class="panel-kicker">PERSONALIZE YOUR SPACE</span>
                     <h2 id="control-center-title">LightMe 控制舱</h2>
                     <p>把陪伴空间调成你喜欢的样子。</p>
                 </div>
@@ -158,7 +151,7 @@
                 <section class="control-section" aria-labelledby="appearance-title">
                     <div class="control-section-title">
                         <span class="section-glyph" aria-hidden="true">◐</span>
-                        <div><h3 id="appearance-title">界面主题</h3><small>APPEARANCE</small></div>
+                        <div><h3 id="appearance-title">界面主题</h3></div>
                     </div>
                     <div class="theme-segment" data-theme-control>
                         <button class="theme-option" type="button" data-theme-value="light"><span aria-hidden="true">☼</span> 浅色</button>
@@ -169,7 +162,7 @@
                 <section class="control-section" aria-labelledby="background-title">
                     <div class="control-section-title split-control-title">
                         <span class="section-glyph" aria-hidden="true">✦</span>
-                        <div><h3 id="background-title">陪伴背景</h3><small>SCENE DIY</small></div>
+                        <div><h3 id="background-title">陪伴背景</h3></div>
                         <button id="background-upload-btn" class="text-action" type="button">上传图片</button>
                         <input type="file" id="background-input" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
                     </div>
@@ -185,7 +178,7 @@
                 <section class="control-section" aria-labelledby="accent-title">
                     <div class="control-section-title">
                         <span class="section-glyph" aria-hidden="true">◎</span>
-                        <div><h3 id="accent-title">界面个性</h3><small>PERSONALITY</small></div>
+                        <div><h3 id="accent-title">界面个性</h3></div>
                     </div>
                     <div class="accent-row">
                         <span>强调色</span>
@@ -204,7 +197,7 @@
                 <section class="control-section" aria-labelledby="voice-title">
                     <div class="control-section-title">
                         <span class="section-glyph" aria-hidden="true">♬</span>
-                        <div><h3 id="voice-title">声音与陪伴</h3><small>COMPANION</small></div>
+                        <div><h3 id="voice-title">声音与陪伴</h3></div>
                     </div>
                     <div class="voice-row">
                         <label for="tts-voice-select">LightMe 的声音</label>
@@ -226,13 +219,13 @@
                 <section class="control-section" aria-labelledby="advanced-title">
                     <div class="control-section-title">
                         <span class="section-glyph" aria-hidden="true">⌘</span>
-                        <div><h3 id="advanced-title">能力中心</h3><small>ADVANCED</small></div>
+                        <div><h3 id="advanced-title">能力中心</h3></div>
                     </div>
                     <div class="module-grid">
-                        <button id="tools-btn" type="button" title="工具与技能"><span aria-hidden="true">✣</span><strong>工具技能</strong><small>Tools</small></button>
-                        <button id="workflow-btn" type="button" title="Planner-Executor 工作流" onclick="window.open('workflow.html', '_blank', 'noopener')"><span aria-hidden="true">⌁</span><strong>执行流程</strong><small>Workflow</small></button>
-                        <button id="term-btn" type="button" title="Agent 终端" onclick="openTerminal()"><span aria-hidden="true">›_</span><strong>运行终端</strong><small>Trace</small></button>
-                        <button id="config-btn" type="button" title="AI 配置" onclick="window.open('config_ai.html', '_blank', 'noopener')"><span aria-hidden="true">⚙</span><strong>高级设置</strong><small>Config</small></button>
+                        <button id="tools-btn" type="button" title="工具与技能"><span aria-hidden="true">✣</span><strong>工具技能</strong></button>
+                        <button id="workflow-btn" type="button" title="Planner-Executor 工作流" onclick="window.open('workflow.html', '_blank', 'noopener')"><span aria-hidden="true">⌁</span><strong>执行流程</strong></button>
+                        <button id="term-btn" type="button" title="Agent 终端" onclick="openTerminal()"><span aria-hidden="true">›_</span><strong>运行终端</strong></button>
+                        <button id="config-btn" type="button" title="AI 配置" onclick="window.open('config_ai.html', '_blank', 'noopener')"><span aria-hidden="true">⚙</span><strong>高级设置</strong></button>
                     </div>
                 </section>
             </div>
@@ -314,7 +307,7 @@
     </div>
 
     <script src="../js/live2d-ctrl.js?v=20260803a"></script>
-    <script src="../js/index.js?v=20260803d"></script>
+    <script src="../js/index.js?v=20260812a"></script>
     <script src="../js/ui-customization.js?v=20260809a"></script>
 </body>
 
