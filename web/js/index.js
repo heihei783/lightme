@@ -37,6 +37,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     let activeAgentProcess = null;
     let agentEnabled = false;
     let avatarProfiles = { user: null, ai: null };
+    const defaultAvatarUrls = {
+        user: API_BASE + '/images/default-user-avatar.svg',
+        ai: API_BASE + '/images/default-ai-avatar.svg',
+    };
     let pendingAvatarFile = null;
     let pendingAvatarObjectUrl = '';
     // 当前正在上传的头像类型: 'user' | 'ai'
@@ -59,7 +63,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await resp.json();
             if (data.status === 'success') {
                 if (data.user_avatar) localStorage.setItem('avatar_filename', data.user_avatar);
+                else localStorage.removeItem('avatar_filename');
                 if (data.ai_avatar) localStorage.setItem('ai_avatar_filename', data.ai_avatar);
+                else localStorage.removeItem('ai_avatar_filename');
                 avatarProfiles = {
                     user: data.avatars?.user || null,
                     ai: data.avatars?.ai || null,
@@ -82,7 +88,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function getAvatarUrl(type, filename) {
-        if (!filename) return null;
+        if (!filename) return defaultAvatarUrls[type];
         const profile = avatarProfiles[type];
         const path = profile?.filename === filename && profile.url
             ? profile.url
@@ -118,7 +124,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         showAvatarPreview(url);
         avatarPreviewMeta.textContent = profile
             ? `${profile.width} × ${profile.height} · ${String(profile.format || '').toUpperCase()} · ${formatFileSize(profile.bytes)}`
-            : url ? '当前头像' : '尚未设置头像';
+            : '内置默认头像';
         avatarModal.style.display = 'flex';
         avatarModalClose.focus();
     }
@@ -1074,6 +1080,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         img.decoding = 'async';
         img.draggable = false;
         img.title = '点击更换头像';
+        setAvatarFallback(img, 'user');
         img.onclick = onUserAvatarClick;
         return img;
     }
@@ -1086,32 +1093,40 @@ document.addEventListener('DOMContentLoaded', async () => {
         img.decoding = 'async';
         img.draggable = false;
         img.title = '点击更换AI头像';
+        setAvatarFallback(img, 'ai');
         img.onclick = onAiAvatarClick;
         return img;
     }
 
+    function setAvatarFallback(img, type) {
+        img.onerror = () => {
+            img.onerror = null;
+            img.src = defaultAvatarUrls[type];
+        };
+    }
+
     function buildUserAvatarHTML() {
         const url = getUserAvatarUrl();
-        if (url) {
-            return `<img class="msg-avatar msg-avatar-user" src="${escHtml(url)}" alt="我" title="查看或更换头像" width="40" height="40" decoding="async" draggable="false">`;
-        }
-        return `<div class="msg-avatar-placeholder avatar-placeholder-user" style="background:#ffe0e6;color:#ff7675;" title="点击上传头像">🐱</div>`;
+        return `<img class="msg-avatar msg-avatar-user" src="${escHtml(url)}" alt="我" title="查看或更换头像" width="40" height="40" decoding="async" draggable="false">`;
     }
 
     function buildAiAvatarHTML() {
         const url = getAiAvatarUrl();
-        if (url) {
-            return `<img class="msg-avatar msg-avatar-ai" src="${escHtml(url)}" alt="AI" title="查看或更换AI头像" width="40" height="40" decoding="async" draggable="false">`;
-        }
-        return `<div class="msg-avatar-placeholder avatar-placeholder-ai" style="background:#e0f0ff;color:#4285f4;" title="点击上传AI头像">🤖</div>`;
+        return `<img class="msg-avatar msg-avatar-ai" src="${escHtml(url)}" alt="AI" title="查看或更换AI头像" width="40" height="40" decoding="async" draggable="false">`;
     }
 
     // 给已渲染的 avatar 元素绑定点击事件
     function bindAvatarClicks(row) {
         const userAvatar = row.querySelector('.msg-avatar-user, .avatar-placeholder-user');
-        if (userAvatar) userAvatar.onclick = onUserAvatarClick;
+        if (userAvatar) {
+            if (userAvatar.tagName === 'IMG') setAvatarFallback(userAvatar, 'user');
+            userAvatar.onclick = onUserAvatarClick;
+        }
         const aiAvatar = row.querySelector('.msg-avatar-ai, .avatar-placeholder-ai');
-        if (aiAvatar) aiAvatar.onclick = onAiAvatarClick;
+        if (aiAvatar) {
+            if (aiAvatar.tagName === 'IMG') setAvatarFallback(aiAvatar, 'ai');
+            aiAvatar.onclick = onAiAvatarClick;
+        }
     }
 
     // ==================== 消息渲染 ====================
