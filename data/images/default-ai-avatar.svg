@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">默认机器人头像</title>
+  <desc id="desc">青紫渐变背景上的友好机器人</desc>
+  <defs>
+    <linearGradient id="bg" x1="10" y1="5" x2="119" y2="123" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#55DED2"/>
+      <stop offset=".55" stop-color="#5B9DEB"/>
+      <stop offset="1" stop-color="#8467E8"/>
+    </linearGradient>
+    <linearGradient id="face" x1="38" y1="37" x2="91" y2="98" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EAF7FF"/>
+    </linearGradient>
+    <filter id="shadow" x="18" y="21" width="92" height="91" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#17386A" flood-opacity=".28"/>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="url(#bg)"/>
+  <circle cx="105" cy="24" r="20" fill="#FFFFFF" opacity=".12"/>
+  <circle cx="19" cy="108" r="25" fill="#FFFFFF" opacity=".08"/>
+  <g stroke="#FFFFFF" stroke-linecap="round" stroke-width="5">
+    <path d="M64 29V18"/>
+    <circle cx="64" cy="15" r="4" fill="#FFFFFF" stroke="none"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="25" y="31" width="78" height="71" rx="25" fill="url(#face)"/>
+    <rect x="34" y="43" width="60" height="43" rx="17" fill="#24315E"/>
+    <circle cx="50" cy="63" r="6" fill="#63E4D6"/>
+    <circle cx="78" cy="63" r="6" fill="#9B8CFF"/>
+    <path d="M51 76c7 6 19 6 26 0" fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-width="4"/>
+    <path d="M20 58h6v22h-6a7 7 0 0 1-7-7v-8a7 7 0 0 1 7-7Zm88 0h-6v22h6a7 7 0 0 0 7-7v-8a7 7 0 0 0-7-7Z" fill="#EAF7FF"/>
+  </g>
+  <path d="M47 108h34" stroke="#FFFFFF" stroke-linecap="round" stroke-width="6" opacity=".72"/>
+</svg>
